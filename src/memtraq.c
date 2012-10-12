@@ -218,11 +218,19 @@ do_backtrace (int skip) {
 #endif
 
       strings = backtrace_symbols (buffer, n);
-      if (strings == 0) {
+      if (strings != 0) {
          for (i = skip; i < n; i++) {
-            fprintf (logf, ";%p", buffer [i]);
+            fprintf (logf, ";%s", strings [i]);
          }
+         free (strings);
          resolved = true;
+      }
+      else {
+#ifdef DEBUG
+         if (debug) {
+            fprintf (stderr, "# do_backtrace: backtrace_symbols failed!\n");
+         }
+#endif
       }
    }
 #endif /* DECODE_ADDRESSES */
