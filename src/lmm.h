@@ -19,55 +19,25 @@
  *
  */
 
-#ifndef MEMTRAQ_INTERNAL_H
-#define MEMTRAQ_INTERNAL_H
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
-
-#include <memtraq.h>
-
-#include "clist.h"
-#include "lmm.h"
-
-#define _GNU_SOURCE 1
-
-#define MAX_BT 100
-#define DECODE_ADDRESSES 1
-
-#define DEBUG 1
+#ifndef MEMTRAQ_LMM_H
+#define MEMTRAQ_LMM_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern int debug;
-
 extern void*
-malloc (size_t s) __attribute__((visibility("default")));
+lmm_alloc (size_t s);
 
 extern void
-free (void* ptr) __attribute__((visibility("default")));
+lmm_free (void* p);
 
-extern void*
-realloc (void* ptr, size_t newsize) __attribute__((visibility("default")));
-
-extern void*
-calloc (size_t n, size_t size) __attribute__((visibility("default")));
-
-void*
-do_malloc (size_t s, int skip);
-
-void
-do_free (void* p, int skip);
-
-void*
-do_realloc (void* p, size_t s, int skip);
+extern int
+lmm_valid (void* p);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MEMTRAQ_INTERNAL_H */
+#endif /* MEMTRAQ_LMM_H */
 

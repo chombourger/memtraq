@@ -75,193 +75,7 @@ static unsigned int start = 0;
   * environment variable). */
 static FILE* logf;
 
-static bool debug = false;
-
-typedef struct {
-   clist_t list;
-   union {
-      clist_t node;
-      char bss [INTERNAL_HEAP_SIZE];
-   } region;
-} bss_t;
-
-static bss_t bss = {
-   .list = {
-      (clist_t*) (((char*) &bss) + sizeof (clist_t)),
-      (clist_t*) (((char*) &bss) + sizeof (clist_t)),
-      0,
-      0
-   },
-   .region = {
-      .node = {
-         .prev   = (clist_t*) (&bss),
-         .next   = (clist_t*) (&bss),
-         .size   = sizeof (bss.region.bss) - sizeof (clist_t),
-         .marker = BAD_MARKER
-      }
-   }
-};
-
-#define ALIGN(x,a) (((x)+(a)-1UL)&~((a)-1UL))
-
-static void
-check_next_block (clist_t* block) {
-   clist_t* next;
-
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# check_next_block(%p)\n", block);
-   }
-#endif
-
-   next = (clist_t*) ((char*) block + block->size + sizeof (clist_t));
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# check_next_block: %p(%u) => %p(%u) / %p\n",
-         block, block->size, next, next->size, ((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE);
-   }
-#endif
-   if ((void*) (next) < (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE)) {
-      if (next->marker == BAD_MARKER) {
-         block->size += next->size + sizeof (clist_t);
-         CLIST_REMOVE (next);
-#ifdef DEBUG
-         if (debug) {
-            fprintf (stderr, "# check_next_block: block %p was also free!\n"
-               "# check_next_block: size changed to %u\n", next, block->size);
-         }
-#endif
-      }
-      else if (next->marker == GOOD_MARKER) {
-#ifdef DEBUG
-         if (debug) {
-            fprintf (stderr, "# check_next_block: block %p is in use!\n", next);
-         }
-#endif
-      }
-   }
-}
-
-static void*
-internal_alloc (size_t s) {
-   clist_t* it;
-
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# internal_alloc(%u)\n", s);
-   }
-#endif
-   s = ALIGN (s, sizeof (clist_t));
-
-   it = CLIST_HEAD (&bss.list);
-   while (!CLIST_END (&bss.list, it)) {
-
-#ifdef DEBUG
-      if (debug) {
-         if (it->marker != BAD_MARKER) {
-            fprintf (stderr, "# internal_alloc: invalid marker in block %p (%08x)\n",
-               it, it->marker);
-         }
-         fprintf (stderr, "# internal_alloc: free region %p %u\n", it, it->size);
-      }
-#endif
-
-      check_next_block (it);
-
-      if (it->size >= s) {
-         void* result;
-         unsigned int chunk;
-         unsigned int left;
-         char* remain;
-
-         chunk = it->size;
-         it->marker = GOOD_MARKER;
-         result = (it + 1);
-         CLIST_REMOVE (it);
-
-         left = chunk - s;
-
-#ifdef DEBUG
-         if (debug) {
-            fprintf (stderr, "# internal_alloc: need %u, returning %p-%p "
-               "(head=%p, chunk size was %u, %u will be left)\n",
-               s, (it + 1), (char*) (it + 1) + s - 1, it, chunk, left);
-         }
-#endif
-
-         if (left >= sizeof (clist_t)) {
-
-            /* adjust size of the block found to the size that was requested. */
-            it->size = s;
-
-            /* create a new free block with the memory left from the block
-             * we selected. */
-            remain  = (char*) (it + 1);
-            remain += s;
-            it = (clist_t*) (remain);
-            it->marker = BAD_MARKER;
-            CLIST_ADDTAIL (&bss.list, it, left - sizeof (clist_t));
-
-#ifdef DEBUG
-            if (debug) {
-               fprintf (stderr, "# internal_alloc: %u bytes left, "
-                  "setup free block at %p\n", left, it);
-            }
-#endif
-         }
-         else {
-
-            /* keep the size of the allocated block slightly larger than the
-             * amount requested since we do not have enough left to setup a
-             * new free block. */
-
-#ifdef DEBUG
-            if (debug) {
-               fprintf (stderr, "# internal_alloc: keeping size of block %p "
-                  "to %u since only %u left\n", it, chunk, left);
-            }
-#endif
-         }
-
-#ifdef DEBUG
-         if (debug) {
-            fprintf (stderr, "# internal_alloc: exit=%p\n", result);
-         }
-#endif
-
-         return result;
-      }
-      it = CLIST_NEXT (it);
-   }
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# internal_alloc: failed to allocate %u bytes!\n", s);
-   }
-#endif
-   return 0;
-}
-
-static void
-internal_free (void* p) {
-   clist_t* it;
-
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# internal_free(%p)\n", p);
-   }
-#endif
-
-   it = (clist_t*) p;
-   it --;
-   it->marker = BAD_MARKER;
-   CLIST_ADDTAIL (&bss.list, it, it->size);
-
-#ifdef DEBUG
-   if (debug) {
-      fprintf (stderr, "# internal_free: chunk size=%u, head=%p\n", it->size, it);
-   }
-#endif
-}
+int debug = 0;
 
 static void
 check_debug (void) {
@@ -269,7 +83,7 @@ check_debug (void) {
 
    debugv = getenv ("MEMTRAQ_DEBUG");
    if ((debugv != 0) && (strcmp (debugv, "") != 0)) {
-      debug = true;
+      debug = 1;
    }
 }
 
@@ -375,7 +189,7 @@ check_initialized (void) {
       if (initialized == true) {
          fprintf (logf, "timestamp;thread-name;thread-id;event;param1;param2;param3;result;callstack\n");
          log_event ("start");
-         fprintf (logf, VERSION ";%u;%d;%d\n", INTERNAL_HEAP_SIZE, enabled, resolve);
+         fprintf (logf, VERSION ";%d;%d\n", enabled, resolve);
       }
    }
    result = initialized;
@@ -429,7 +243,7 @@ do_malloc (size_t s, int skip) {
    op_counter ++;
 
    if (in_malloc == true) {
-      result = internal_alloc (s);
+      result = lmm_alloc (s);
       pthread_mutex_unlock (&lock);
       return result;
    }
@@ -472,9 +286,8 @@ do_free (void* p, int skip) {
       return;
    }
 
-   if ((p >= (void*) (&bss.region.bss)) && 
-       (p < (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE))) {
-      internal_free (p);
+   if (lmm_valid (p)) {
+      lmm_free (p);
       return;
    }
 
@@ -513,10 +326,8 @@ do_realloc (void* p, size_t s, int skip) {
 
    void* result;
 
-   if ((p >= (void*) (&bss.region.bss)) && 
-       (p < (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE))) {
-      fprintf (logf, "realloc(%p,%u) not supported by internal alloctor (%p-%p)!\n",
-         p, s, &bss.region.bss, (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE));
+   if (lmm_valid (p)) {
+      fprintf (logf, "realloc(%p,%u) not supported by internal alloctor!\n", p, s);
       return 0;
    }
 
