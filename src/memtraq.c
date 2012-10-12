@@ -84,13 +84,6 @@ static FILE* logf;
 
 static bool debug = false;
 
-typedef struct clist {
-   struct clist* next;
-   struct clist* prev;
-   unsigned int size;
-   unsigned int marker;
-} clist_t;
-
 typedef struct {
    clist_t list;
    union {
@@ -117,32 +110,6 @@ static bss_t bss = {
 };
 
 #define ALIGN(x,a) (((x)+(a)-1UL)&~((a)-1UL))
-
-# define CLIST_HEAD(l)  (((clist_t*)(l))->next)
-# define CLIST_END(l,n) (((clist_t*)(l)) == ((clist_t*)(n)))
-# define CLIST_NEXT(n)  (((clist_t*)(n))->next)
-
-# define CLIST_ADDTAIL(l,n,s) do { \
-   clist_t* __n = (clist_t*) (n);  \
-   clist_t* __t = (l)->prev;       \
-   unsigned int __s = (s);         \
-                                   \
-   __n->next = (l);                \
-   __n->prev = __t;                \
-   __n->size = __s;                \
-                                   \
-   (l)->prev = __n;                \
-   __t->next = __n;                \
-} while (0)
-
-# define CLIST_REMOVE(n) do {     \
-   clist_t* __n = (clist_t*) (n); \
-   clist_t* __t = __n->prev;      \
-                                  \
-   __n = __n->next;               \
-   __t->next = __n;               \
-   __n->prev = __t;               \
-} while (0)
 
 static void
 check_next_block (clist_t* block) {

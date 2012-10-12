@@ -28,6 +28,8 @@
 
 #include <memtraq.h>
 
+#include "clist.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
