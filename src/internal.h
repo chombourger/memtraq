@@ -30,6 +30,14 @@
 
 #include "clist.h"
 
+#define _GNU_SOURCE 1
+#define INTERNAL_HEAP_SIZE (1024 * 512)
+
+#define MAX_BT 100
+#define DECODE_ADDRESSES 1
+
+#define DEBUG 1
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -19,15 +19,10 @@
  *
  */
 
-#define _GNU_SOURCE 1
-#define MAX_BT 100
-#define INTERNAL_HEAP_SIZE (1024 * 512)
-#define DECODE_ADDRESSES 1
-
-#define DEBUG 1
-
 #define GOOD_MARKER 0x600DBEEF
 #define BAD_MARKER  0xBAADBEEF
+
+#include "internal.h"
 
 #include <assert.h>
 #include <dlfcn.h>
@@ -37,8 +32,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
-
-#include "internal.h"
 
 typedef enum {
    false = 0,
