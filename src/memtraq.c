@@ -56,20 +56,14 @@ static bool enabled = true;
 /** Boolean for symbols to be resolved (defaults to true). */
 static bool resolve = true;
 
-/** Operation counter, incremented on every memory operation. */
-static unsigned long long op_counter = 0;
-
 /** Serial number for tags created with memtraq_tag(). */
 static unsigned int tag_serial = 0;
 
 /** Lock for serializing memory requests. */
 static pthread_mutex_t lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 
-/** Boolean indicating whether a memory operation is already in progress. */
-static bool in_malloc = false;
-
-/** From which operation index to start tracking memory operations. */
-static unsigned int start = 0;
+/** Level of recursion within the memtraq library. */
+static unsigned int nested_level = 0;
 
 /** File to log transactions to (set on initialization from the MEMTRAQ_LOG
   * environment variable). */
@@ -160,9 +154,6 @@ do_init (void) {
    old_malloc = (malloc_func_t) dlsym (RTLD_NEXT, "__libc_malloc");
    old_realloc = (realloc_func_t) dlsym (RTLD_NEXT, "__libc_realloc");
    old_free = (free_func_t) dlsym (RTLD_NEXT, "__libc_free");
-   old_malloc = (malloc_func_t) dlsym (RTLD_NEXT, "__libc_malloc");
-   old_realloc = (realloc_func_t) dlsym (RTLD_NEXT, "__libc_realloc");
-   old_free = (free_func_t) dlsym (RTLD_NEXT, "__libc_free");
 
 #ifdef DEBUG
    if (debug) {
@@ -179,11 +170,13 @@ do_init (void) {
    return (old_malloc != 0) && (old_free != 0) && (old_realloc != 0);
 }
 
+static void
+do_backtrace (int skip);
+
 static bool
 check_initialized (void) {
    bool result;
 
-   pthread_mutex_lock (&lock);
    if (initialized == false) {
       initialized = do_init ();
       if (initialized == true) {
@@ -193,7 +186,6 @@ check_initialized (void) {
       }
    }
    result = initialized;
-   pthread_mutex_unlock (&lock);
 
    return result;
 }
@@ -248,34 +240,33 @@ do_malloc (size_t s, int skip) {
    void* result;
 
    pthread_mutex_lock (&lock);
-   op_counter ++;
+   nested_level ++;
 
-   if (in_malloc == true) {
+   if (nested_level > 1) {
       result = lmm_alloc (s);
-      pthread_mutex_unlock (&lock);
-      return result;
+   }
+   else {
+
+      if (check_initialized ()) {
+
+         assert (old_malloc != 0);
+         result = old_malloc (s);
+
+         if (enabled) {
+
+            /* Log operation and backtrace. */
+            log_event ("malloc");
+            fprintf (logf, "%u;void;%p", s, result);
+            do_backtrace (skip + 2);
+            fprintf (logf, "\n");
+         }
+      }
+      else {
+         result = 0;
+      }
    }
 
-   in_malloc = true;
-
-   if (check_initialized () == false) {
-      pthread_mutex_unlock (&lock);
-      return 0;
-   }
-
-   assert (old_malloc != 0);
-   result = old_malloc (s);
-
-   if ((enabled) && (op_counter > start)) {
-
-      /* Log operation and backtrace. */
-      log_event ("malloc");
-      fprintf (logf, "%u;void;%p", s, result);
-      do_backtrace (skip + 2);
-      fprintf (logf, "\n");
-   }
-
-   in_malloc = false;
+   nested_level --;
    pthread_mutex_unlock (&lock);
 
 #ifdef DEBUG
@@ -294,39 +285,35 @@ do_free (void* p, int skip) {
       return;
    }
 
+   pthread_mutex_lock (&lock);
+   nested_level ++;
+
    if (lmm_valid (p)) {
       lmm_free (p);
-      return;
+   }
+   else {
+      if (check_initialized ()) {
+
+         assert (old_free != 0);
+         old_free (p);
+
+         if (enabled) {
+
+            /* Log operation and backtrace. */
+            log_event ("free");
+            fprintf (logf, "%p;void;void\n", p);
+         }
+      }
    }
 
-   if (check_initialized () == false) {
-      return;
-   }
+   nested_level --;
+   pthread_mutex_unlock (&lock);
 
 #ifdef DEBUG
    if (debug) {
-      fprintf (stderr, "# do_free (p=%p, skip=%d)\n", p, skip);
+      fprintf (stderr, "# do_free(%p, %d): exit\n", p, skip);
    }
 #endif
-
-   pthread_mutex_lock (&lock);
-   op_counter ++;
-   in_malloc = true;
-
-   assert (old_free != 0);
-   old_free (p);
-
-   if ((enabled) && (op_counter > start)) {
-
-      /* Log operation and backtrace. */
-      log_event ("free");
-      fprintf (logf, "%p;void;void", p);
-      do_backtrace (skip + 2);
-      fprintf (logf, "\n");
-   }
-
-   in_malloc = false;
-   pthread_mutex_unlock (&lock);
 }
 
 void*
@@ -339,18 +326,18 @@ do_realloc (void* p, size_t s, int skip) {
       return 0;
    }
 
+   pthread_mutex_lock (&lock);
+   nested_level ++;
+
    if (check_initialized () == false) {
+      pthread_mutex_unlock (&lock);
       return 0;
    }
-
-   pthread_mutex_lock (&lock);
-   op_counter ++;
-   in_malloc = true;
 
    assert (old_realloc != 0);
    result = old_realloc (p, s);
 
-   if ((enabled) && (op_counter > start)) {
+   if (enabled) {
 
       /* Log event and backtrace. */
       log_event ("realloc");
@@ -359,7 +346,7 @@ do_realloc (void* p, size_t s, int skip) {
       fprintf (logf, "\n");
    }
 
-   in_malloc = false;
+   nested_level --;
    pthread_mutex_unlock (&lock);
 
 #ifdef DEBUG
@@ -382,30 +369,30 @@ void
 memtraq_disable (void) {
    pthread_mutex_lock (&lock);
    enabled = false;
+   fflush (logf);
    pthread_mutex_unlock (&lock);
 }
 
 void
 memtraq_tag (const char* name) {
 
-   if (check_initialized () == false) {
-      return;
-   }
-
    pthread_mutex_lock (&lock);
-   in_malloc = true;
+   nested_level ++;
 
-   if (enabled) {
-      tag_serial ++;
+   if (check_initialized ()) {
 
-      /* Log operation and backtrace. */
-      log_event ("tag");
-      fprintf (logf, "%s;%u;void", name, tag_serial);
-      do_backtrace (2);
-      fprintf (logf, "\n");
+      if (enabled) {
+         tag_serial ++;
+
+         /* Log operation and backtrace. */
+         log_event ("tag");
+         fprintf (logf, "%s;%u;void", name, tag_serial);
+         do_backtrace (2);
+         fprintf (logf, "\n");
+      }
    }
 
-   in_malloc = false;
+   nested_level --;
    pthread_mutex_unlock (&lock);
 }
 
