@@ -213,7 +213,19 @@ lmm_free (void* p) {
 
 int
 lmm_valid (void* p) {
-   return ((p >= (void*) (&bss.region.bss)) && 
-           (p < (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE)));
+   int result;
+
+   result = ((p >= (void*) (&bss.region.bss)) && 
+             (p < (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE)));
+
+#ifdef DEBUG
+   if (debug) {
+      fprintf (stderr, "# lmm_valid(%p): start=%p, end=%p => %d\n",
+         p, (void*) (&bss.region.bss),
+         (void*) (((char*) &bss.region.bss) + INTERNAL_HEAP_SIZE), result);
+   }
+#endif
+
+   return result;
 }
 
