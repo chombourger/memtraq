@@ -42,8 +42,10 @@ GetOptions(\%opts,
 my $file=$ARGV[0];
 open (DMALLOC, $file) or die("Could not open " . $file . "!");
 
-# Load provided map file into the 'maps' array
 my %maps;
+my %syms;
+
+# Load provided map file into the 'maps' array
 if ($map ne '') {
    open (MAP, $map) or die("Could not open map " . $map . "!");
    foreach my $line (<MAP>)  {
@@ -74,6 +76,52 @@ if ($map ne '') {
    close (MAP);
 }
 
+sub decode {
+   my $a = $_[0];
+   my $loc = $a;
+
+   if ($a =~ /^0x[0-9a-f]+$/) {
+      $a = hex ($a);
+      if (defined ($syms{$a})) {
+         $loc = $syms{$a} if defined($syms{$a});
+      }
+      else {
+         foreach my $m (keys %maps) {
+            my $start = $maps{$m}{'start'};
+            my $end   = $maps{$m}{'end'};
+            my $obj   = $maps{$m}{'file'};
+            if (($start <= $a) && ($a <= $end)) {
+               my @paths_array = split (/:/, $paths);
+               foreach my $p (@paths_array) {
+                  if (-e $p . $obj) {
+                     $obj = $p . $obj;
+                  }
+                  elsif (-e $p . "/" . basename ($obj)) {
+                     $obj = $p . "/" . basename($obj);
+                  }
+               }
+               if (-e $obj) {
+                  my $offset = $a - $start;
+                  my $type = `file -b $obj`;
+                  if ($type =~ / executable,/) {
+                     $offset = $a;
+                  }
+                  my $cmd = sprintf ("addr2line -i -p -C -f -e %s 0x%x", $obj, $offset);
+                  $loc = `$cmd`;
+                  $loc =~ s/\n//g;
+                  $loc = sprintf ("0x%08x: %s [%s]", $a, $loc, basename ($obj));
+                  $syms{$a} = $loc;
+               }
+               else {
+                  $loc = sprintf ("0x%08x: [%s]", $a, $obj);
+               }
+            }
+         }
+      }
+   }
+   return $loc;
+}
+
 my %chunks;
 my $total = 0;
 my $allocs = 0;
@@ -81,6 +129,7 @@ my $frees = 0;
 my $reallocs = 0;
 my $ts = 0;
 my $log = 1;
+my %hotspots;
 
 my @fields;
 my @heap_history;
@@ -276,45 +325,27 @@ foreach my $ptr (keys %chunks) {
     print "\tthread   : " . $thread_name . " (" . $thread_id . ")\n";
     print "\tcallstack:\n";
 
-    my @bt = split (/\;/, $chunks{$ptr}{'backtrace'});
+    my $btstr = $chunks{$ptr}{'backtrace'};
+    my @bt = split (/\;/, $btstr);
+    my $count = 1;
+    if (defined ($hotspots{$btstr})) {
+       $count = $count + $hotspots{$btstr};
+    }
+    $hotspots{$btstr} = $count;
     foreach $a (@bt) {
-       my $loc = $a;
-       if ($a =~ /^0x[0-9a-f]+$/) {
-       $a = hex ($a);
-       foreach my $m (keys %maps) {
-          my $start = $maps{$m}{'start'};
-          my $end   = $maps{$m}{'end'};
-          my $obj   = $maps{$m}{'file'};
-          if (($start <= $a) && ($a <= $end)) {
-             my @paths_array = split (/:/, $paths);
-             foreach my $p (@paths_array) {
-                if (-e $p . $obj) {
-                   $obj = $p . $obj;
-                }
-                elsif (-e $p . "/" . basename ($obj)) {
-                   $obj = $p . "/" . basename($obj);
-                }
-             }
-             if (-e $obj) {
-                my $offset = $a - $start;
-                my $type = `file -b $obj`;
-                if ($type =~ / executable,/) {
-                   $offset = $a;
-                }
-                my $cmd = sprintf ("addr2line -i -p -C -f -e %s 0x%x", $obj, $offset);
-                $loc = `$cmd`;
-                $loc =~ s/\n//g;
-                $loc = sprintf ("0x%08x: %s [%s]", $a, $loc, basename ($obj));
-             }
-             else {
-                $loc = sprintf ("0x%08x: [%s]", $a, $obj);
-             }
-          }
-       }
-       }
+       my $loc = decode ($a);
        print "\t\t" . $loc . "\n";
     }
     $idx = $idx + 1;
+}
+
+foreach my $btstr (sort {$hotspots{$b} <=> $hotspots{$a} } keys %hotspots) {
+   print $hotspots{$btstr} . " leaks with the below callstack:\n";
+   my @bt = split (/\;/, $btstr);
+   foreach my $a (@bt) {
+       my $loc = decode ($a);
+       print "\t\t" . $loc . "\n";
+   }
 }
 
 print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
