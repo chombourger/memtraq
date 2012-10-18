@@ -35,6 +35,7 @@ my $ts_max;
 my $heap_max = 0;
 
 my %usage_by_objects;
+my %usage_by_threads;
 
 # Number of columns for graphs 
 my $graph_cols = 80;
@@ -407,6 +408,14 @@ foreach my $ptr (keys %chunks) {
              $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
           }
        }
+       if ($level == 0) {
+          if (defined ($usage_by_threads{$thread_id})) {
+             $usage_by_threads{$thread_id} += $chunks{$ptr}{'size'};
+          }
+          else {
+             $usage_by_threads{$thread_id} = $chunks{$ptr}{'size'};
+          }
+       }
        $level = $level + 1;
     }
     $idx = $idx + 1;
@@ -420,6 +429,17 @@ print "\n";
 foreach my $obj (keys %usage_by_objects) {
    my $sz = $usage_by_objects{$obj};
    printf ("%-40s %24u (%3d%%)\n", basename ($obj), $sz, ($sz * 100) / $total);
+}
+printf ("%-40s %24u (100%%)\n", "total", $total);
+
+print "\n";
+print "Current heap utilization by threads:\n";
+print "------------------------------------\n";
+print "\n";
+
+foreach my $thr (keys %usage_by_threads) {
+   my $sz = $usage_by_threads{$thr};
+   printf ("%-40s %24u (%3d%%)\n", $thr, $sz, ($sz * 100) / $total);
 }
 printf ("%-40s %24u (100%%)\n", "total", $total);
 
