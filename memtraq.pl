@@ -25,6 +25,22 @@ use Getopt::Long;
 
 my %opts;
 
+# Current timestamp
+my $ts = 0;
+# Lowest timestamp
+my $ts_min;
+# Greatest timestamp
+my $ts_max;
+
+my $heap_max = 0;
+
+my %usage_by_objects;
+
+# Number of columns for graphs 
+my $graph_cols = 80;
+# Number of rows for graphs 
+my $graph_rows = 40;
+
 my $before = '';
 my $after = '';
 my $map = '';
@@ -79,11 +95,13 @@ if ($map ne '') {
 sub decode {
    my $a = $_[0];
    my $loc = $a;
+   my %result;
 
    if ($a =~ /^0x[0-9a-f]+$/) {
       $a = hex ($a);
       if (defined ($syms{$a})) {
-         $loc = $syms{$a} if defined($syms{$a});
+         $result{'object'} = $syms{$a}{'object'};
+         $result{'loc'} = $syms{$a}{'loc'};
       }
       else {
          foreach my $m (keys %maps) {
@@ -97,12 +115,12 @@ sub decode {
                      $obj = $p . $obj;
                   }
                   elsif (-e $p . "/" . basename ($obj)) {
-                     $obj = $p . "/" . basename($obj);
+                     $obj = $p . "/" . basename ($obj);
                   }
                }
                if (-e $obj) {
                   my $offset = $a - $start;
-                  my $type = `file -b $obj`;
+                  my $type = `file -L -b $obj`;
                   if ($type =~ / executable,/) {
                      $offset = $a;
                   }
@@ -110,26 +128,30 @@ sub decode {
                   $loc = `$cmd`;
                   $loc =~ s/\n//g;
                   $loc = sprintf ("0x%08x: %s [%s]", $a, $loc, basename ($obj));
-                  $syms{$a} = $loc;
                }
                else {
                   $loc = sprintf ("0x%08x: [%s]", $a, $obj);
                }
+               $result{'object'} = $obj;
+               $result{'loc'} = $loc;
+               $syms{$a}{'object'} = $obj;
+               $syms{$a}{'loc'} = $loc;
             }
          }
       }
    }
-   return $loc;
+   return %result;
 }
 
 my %chunks;
 my $total = 0;
 my $allocs = 0;
 my $frees = 0;
+my $unknown_frees = 0;
 my $reallocs = 0;
-my $ts = 0;
 my $log = 1;
 my %hotspots;
+my $lines = 0;
 
 my @fields;
 my @heap_history;
@@ -147,6 +169,9 @@ foreach my $line (<DMALLOC>)  {
 
    # <ts>;<thread-name>
    if ($line =~ /^\d+\;/) {
+
+      $lines = $lines + 1; 
+
       $ts = $line;
       $ts =~ s/\;.*//g;
       $line =~ s/^\d+\;//;
@@ -160,6 +185,14 @@ foreach my $line (<DMALLOC>)  {
       $thread_id = $line;
       $thread_id =~ s/\;.*//;
       $line =~ s/\d++\;//;
+
+      # Initialize ts_min if this is the first log entry
+      if ($lines eq 1) {
+         $ts_min = $ts;
+      }
+
+      # As memtraq logs are ordered chronogically, ts_max is the current ts
+      $ts_max = $ts;
    }
 
    # tag;<name>;<serial>;void;<backtrace>
@@ -260,6 +293,9 @@ foreach my $line (<DMALLOC>)  {
             my $size = $chunks{$ptr}{'size'};
             $total = $total - $size;
          }
+         else {
+            $unknown_frees ++;
+         }
 
          $frees ++;
          delete $chunks{$ptr};
@@ -309,17 +345,40 @@ foreach my $line (<DMALLOC>)  {
       }
    }
 
+   if ($total > $heap_max) {
+      $heap_max = $total;
+   }
+
    push (@fields, $ts);
    push (@heap_history, $total);
 }
 close(DMALLOC);
+
+print "\n";
+print "Summary:\n";
+print "--------\n";
+print "\n";
+
+print $total . " bytes (" . keys(%chunks) . " blocks) in use\n";
+print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
+if ($unknown_frees > 0) {
+   print "Note: " . $unknown_frees . " frees for unknown blocks!\n";
+}
+
+my $time_total = $ts_max - $ts_min;
+my $time_incr = $time_total / $graph_cols;
+my $heap_incr = $heap_max / $graph_rows;
+
+print "\n";
+print "Listing of all memory blocks still allocated:\n";
+print "---------------------------------------------\n";
 
 my $idx = 1;
 foreach my $ptr (keys %chunks) {
     my $thread_name = $chunks{$ptr}{'thread_name'};
     my $thread_id = $chunks{$ptr}{'thread_id'};
 
-    print $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
+    print "\nblock #" . $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
     print "\taddress  : " . $ptr . "\n";
     print "\ttimestamp: " . $chunks{$ptr}{'timestamp'} . "\n";
     print "\tthread   : " . $thread_name . " (" . $thread_id . ")\n";
@@ -328,28 +387,56 @@ foreach my $ptr (keys %chunks) {
     my $btstr = $chunks{$ptr}{'backtrace'};
     my @bt = split (/\;/, $btstr);
     my $count = 1;
-    if (defined ($hotspots{$btstr})) {
-       $count = $count + $hotspots{$btstr};
+    my $size = 0;
+    if (defined ($hotspots{$btstr}{'count'})) {
+       $count = $hotspots{$btstr}{'count'} + 1;
+       $size  = $hotspots{$btstr}{'count'} + $chunks{$ptr}{'size'};
     }
-    $hotspots{$btstr} = $count;
+    $hotspots{$btstr}{'count'} = $count;
+    $hotspots{$btstr}{'size'}  = $size;
+    my $level = 0;
     foreach $a (@bt) {
-       my $loc = decode ($a);
-       print "\t\t" . $loc . "\n";
+       my %result = decode ($a);
+       print "\t\t" . $result{'loc'} . "\n";
+       my $obj = $result{'object'};
+       if ((defined ($obj)) && ($level == 0)) {
+          if (defined ($usage_by_objects{$obj})) {
+             $usage_by_objects{$obj} += $chunks{$ptr}{'size'};
+          }
+          else {
+             $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
+          }
+       }
+       $level = $level + 1;
     }
     $idx = $idx + 1;
 }
 
-foreach my $btstr (sort {$hotspots{$b} <=> $hotspots{$a} } keys %hotspots) {
-   print $hotspots{$btstr} . " leaks with the below callstack:\n";
+print "\n";
+print "Current heap utilization by modules:\n";
+print "------------------------------------\n";
+print "\n";
+
+foreach my $obj (keys %usage_by_objects) {
+   my $sz = $usage_by_objects{$obj};
+   printf ("%-40s %24u (%3d%%)\n", basename ($obj), $sz, ($sz * 100) / $total);
+}
+printf ("%-40s %24u (100%%)\n", "total", $total);
+
+print "\n";
+print "Allocated blocks grouped by callstacks:\n";
+print "---------------------------------------\n";
+
+foreach my $btstr (sort {$hotspots{$b}{'size'} <=> $hotspots{$a}{'size'} } keys %hotspots) {
+   print "\n";
+   print $hotspots{$btstr}{'count'} . " allocation(s) for a total of " . 
+         $hotspots{$btstr}{'size'} . " bytes from:\n";
    my @bt = split (/\;/, $btstr);
    foreach my $a (@bt) {
-       my $loc = decode ($a);
-       print "\t\t" . $loc . "\n";
+       my %result = decode ($a);
+       print "\t\t" . $result{'loc'} . "\n";
    }
 }
-
-print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
-print $total . " bytes in use\n";
 
 if ($svg ne '') {
 
