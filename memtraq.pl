@@ -46,14 +46,12 @@ my $before = '';
 my $after = '';
 my $map = '';
 my $paths = '';
-my $svg = '';
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
    'after|a=s' => \$after,
    'map|m=s' => \$map,
    'paths|p=s' => \$paths,
-   'svg|s=s' => \$svg,
 );
 
 my $file=$ARGV[0];
@@ -146,6 +144,68 @@ sub decode {
    }
    return %result;
 }
+
+sub max_label_2($$)
+{
+    my ($szB, $szB_scaled) = @_;
+
+    # For the label, if $szB is 999B or below, we print it as an integer.
+    # Otherwise, we print it as a float with 5 characters (including the '.').
+    # Examples (for bytes):
+    #       1 -->     1  B
+    #     999 -->   999  B
+    #    1000 --> 0.977 KB
+    #    1024 --> 1.000 KB
+    #   10240 --> 10.00 KB
+    #  102400 --> 100.0 KB
+    # 1024000 --> 0.977 MB
+    # 1048576 --> 1.000 MB
+    #
+    if    ($szB < 1000)        { return sprintf("%5d",   $szB);        }
+    elsif ($szB_scaled < 10)   { return sprintf("%5.3f", $szB_scaled); }
+    elsif ($szB_scaled < 100)  { return sprintf("%5.2f", $szB_scaled); }
+    else                       { return sprintf("%5.1f", $szB_scaled); }
+}
+
+# Work out the units for the max value, measured in bytes.
+sub B_max_label($)
+{
+    my ($szB) = @_;
+
+    # We repeat until the number is less than 1000, but we divide by 1024 on
+    # each scaling.
+    my $szB_scaled = $szB;
+    my $unit = "B";
+    # Nb: 'K' or 'k' are acceptable as the "binary kilo" (1024) prefix.
+    # (Strictly speaking, should use "KiB" (kibibyte), "MiB" (mebibyte), etc,
+    # but they're not in common use.)
+    if ($szB_scaled >= 1000) { $unit = "KB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "MB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "GB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "TB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "PB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "EB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "ZB"; $szB_scaled /= 1024; }
+    if ($szB_scaled >= 1000) { $unit = "YB"; $szB_scaled /= 1024; }
+
+    return (max_label_2($szB, $szB_scaled), $unit);
+}
+
+# Work out the units for the max value, measured in ms/s/h.
+sub t_max_label($)
+{
+    my ($szB) = @_;
+
+    # We scale from microseconds to seconds to hours.
+    my $szB_scaled = $szB;
+    my $unit = "us";
+    if ($szB_scaled >= 1000) { $unit = "ms"; $szB_scaled /= 1000; }
+    if ($szB_scaled >= 1000) { $unit = "s"; $szB_scaled /= 1000; }
+    if ($szB_scaled >= 3600) { $unit = "h"; $szB_scaled /= 3600; }
+
+    return (max_label_2($szB, $szB_scaled), $unit);
+}
+
 
 my %chunks;
 my $total = 0;
@@ -353,8 +413,9 @@ foreach my $line (<DMALLOC>)  {
       $heap_max = $total;
    }
 
-   push (@fields, $ts);
-   push (@heap_history, $total);
+   $heap_history[$lines]{'timestamp'} = $ts;
+   $heap_history[$lines]{'heap'} = $total;
+   #push (@heap_history, { timestamp => $ts, heap => $total});
 }
 close(DMALLOC);
 
@@ -368,10 +429,67 @@ print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
 if ($unknown_frees > 0) {
    print "Note: " . $unknown_frees . " frees for unknown blocks!\n";
 }
+print "\n";
 
 my $time_total = $ts_max - $ts_min;
 my $time_incr = $time_total / $graph_cols;
 my $heap_incr = $heap_max / $graph_rows;
+
+my @graph;
+my $x;
+my $y;
+
+my ($y_label, $y_unit) = B_max_label ($heap_max);
+my ($x_label, $x_unit) = t_max_label ($ts_max - $ts_min);
+
+# Initialize (erase) graph
+for ($x = 1; $x <= $graph_cols; $x++) {
+   for ($y = 1; $y <= $graph_rows; $y++) {
+      $graph[$x][$y] = ' ';
+   }
+}
+
+# Fill heap history graph
+my $samples = scalar (@heap_history);
+for (my $i = 1; $i < $samples; $i ++) {
+   my $ts = $heap_history[$i]{'timestamp'};
+   my $heap = $heap_history[$i]{'heap'};
+   $ts = $ts - $ts_min;
+   $x = $ts / $time_incr;
+   $y = $heap / $heap_incr;
+   for (my $j = 1; $j <= $y; $j ++) {
+      $graph[$x][$j] = ':';
+   }
+}
+
+# Print X and Y axis
+$graph[0][0] = '+';                                            # axes join point
+for ($x = 1; $x <= $graph_cols; $x++) { $graph[$x][0] = '-'; } # X-axis
+for ($y = 1; $y <= $graph_rows; $y++) { $graph[0][$y] = '|'; } # Y-axis
+$graph[$graph_cols][0] = '>';                                  # X-axis arrow
+$graph[0][$graph_rows] = '^';                                  # Y-axis arrow 
+
+printf("    %2s\n", $y_unit);
+for ($y = $graph_rows; $y >= 0; $y--) {
+   if ($graph_rows == $y) {          # top row
+      print($y_label);
+    } elsif (0 == $y) {              # bottom row
+       print("   0 ");
+    } else {                         # anywhere else
+        print("     ");
+    }
+
+    # Axis and data for the row.
+    for ($x = 0; $x <= $graph_cols; $x++) {
+       printf("%s", $graph[$x][$y]);
+    }
+    if (0 == $y) {
+       print("$x_unit\n");
+    } else {
+       print("\n");
+    }
+}
+printf("     0%s%5s\n", ' ' x ($graph_cols-5), $x_label);
 
 print "\n";
 print "Listing of all memory blocks still allocated:\n";
@@ -459,30 +577,5 @@ foreach my $btstr (sort {$hotspots{$b}{'size'} <=> $hotspots{$a}{'size'} } keys 
        my %result = decode ($a);
        print "\t\t" . $result{'loc'} . "\n";
    }
-}
-
-if ($svg ne '') {
-
-   use SVG::TT::Graph::Line;
-
-   my $graph = SVG::TT::Graph::Line->new ({
-      'height'           => '1024',
-      'width'            => '768',
-      'fields'           => \@fields,
-      'stagger_x_labels' => 0,
-      'show_data_values' => 0,
-      'show_x_labels'    => 0,
-      'scale_integers'   => 1,
-      'area_fill'        => 0,
-   });
-
-   $graph->add_data({
-     'data'  => \@heap_history,
-     'title' => 'Heap',
-   });
-
-   open (MEMTRAQ_SVG, '>' . $svg);
-   print MEMTRAQ_SVG $graph->burn ();
-   close (MEMTRAQ_SVG);
 }
 
