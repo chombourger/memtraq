@@ -378,10 +378,6 @@ foreach my $line (<DMALLOC>)  {
       $oldptr =~ s/^realloc\;//;
       $oldptr =~ s/\;.*//;
 
-      my $ptr = $line;
-      $ptr =~ s/^realloc\;\d+\;void\;//;
-      $ptr =~ s/\;.*//;
-
       # Extract new size
       my $size = $line;
       $size =~ s/^realloc\;0x[0-9a-f]+\;//;
@@ -400,9 +396,9 @@ foreach my $line (<DMALLOC>)  {
 
          $chunks{$newptr}{'backtrace'} = $bt;
          $chunks{$newptr}{'size'} = $size;
-         $chunks{$ptr}{'thread_name'} = $thread_name;
-         $chunks{$ptr}{'thread_id'} = $thread_id;
-         $chunks{$ptr}{'timestamp'} = $ts;
+         $chunks{$newptr}{'thread_name'} = $thread_name;
+         $chunks{$newptr}{'thread_id'} = $thread_id;
+         $chunks{$newptr}{'timestamp'} = $ts;
 
          $total = $total + $size;
          $reallocs ++;
@@ -498,6 +494,10 @@ my $idx = 1;
 foreach my $ptr (keys %chunks) {
     my $thread_name = $chunks{$ptr}{'thread_name'};
     my $thread_id = $chunks{$ptr}{'thread_id'};
+
+    if(!defined($chunks{$ptr}{'size'})) {
+       print "warn: $ptr does not have size!\n";
+    }
 
     print "\nblock #" . $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
     print "\taddress  : " . $ptr . "\n";
