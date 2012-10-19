@@ -1,7 +1,7 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.68])
+AC_PREREQ([2.65])
 AC_INIT(memtraq, 0.3, https://github.com/chombourger/memtraq/issues)
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE([foreign -Wall -Werror])

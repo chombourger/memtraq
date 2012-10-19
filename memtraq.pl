@@ -415,7 +415,6 @@ foreach my $line (<DMALLOC>)  {
 
    $heap_history[$lines]{'timestamp'} = $ts;
    $heap_history[$lines]{'heap'} = $total;
-   #push (@heap_history, { timestamp => $ts, heap => $total});
 }
 close(DMALLOC);
 
