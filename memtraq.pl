@@ -98,6 +98,9 @@ sub decode {
    my $loc = $a;
    my %result;
 
+   $result{'object'} = "unknown";
+   $result{'loc'} = $a;
+
    if ($a =~ /^0x[0-9a-f]+$/) {
       $a = hex ($a);
       if (defined ($syms{$a})) {
@@ -391,7 +394,7 @@ foreach my $ptr (keys %chunks) {
     my $size = 0;
     if (defined ($hotspots{$btstr}{'count'})) {
        $count = $hotspots{$btstr}{'count'} + 1;
-       $size  = $hotspots{$btstr}{'count'} + $chunks{$ptr}{'size'};
+       $size  = $hotspots{$btstr}{'size'} + $chunks{$ptr}{'size'};
     }
     $hotspots{$btstr}{'count'} = $count;
     $hotspots{$btstr}{'size'}  = $size;
@@ -400,15 +403,15 @@ foreach my $ptr (keys %chunks) {
        my %result = decode ($a);
        print "\t\t" . $result{'loc'} . "\n";
        my $obj = $result{'object'};
-       if ((defined ($obj)) && ($level == 0)) {
-          if (defined ($usage_by_objects{$obj})) {
-             $usage_by_objects{$obj} += $chunks{$ptr}{'size'};
-          }
-          else {
-             $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
-          }
-       }
        if ($level == 0) {
+          if (defined ($obj)) {
+             if (defined ($usage_by_objects{$obj})) {
+                $usage_by_objects{$obj} += $chunks{$ptr}{'size'};
+             }
+             else {
+                $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
+             }
+          }
           if (defined ($usage_by_threads{$thread_id})) {
              $usage_by_threads{$thread_id} += $chunks{$ptr}{'size'};
           }
