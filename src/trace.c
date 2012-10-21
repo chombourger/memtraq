@@ -19,58 +19,33 @@
  *
  */
 
-#ifndef MEMTRAQ_INTERNAL_H
-#define MEMTRAQ_INTERNAL_H
+#include "internal.h"
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
+#include <pthread.h>
+#include <stdarg.h>
+#include <stdio.h>
 
-#define _GNU_SOURCE 1
+static pthread_mutex_t trace_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static char trace_buf [256];
 
-#include <memtraq.h>
-#include <stddef.h>
-
-#include "clist.h"
-#include "trace.h"
-#include "lmm.h"
-
-#define MAX_BT 100
-#define DECODE_ADDRESSES 1
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-extern int debug;
-
-extern int
-mt_vsnprintf (char *str, size_t size, const char *format, va_list args);
-
-extern void*
-malloc (size_t s) __attribute__((visibility("default")));
-
-extern void
-free (void* ptr) __attribute__((visibility("default")));
-
-extern void*
-realloc (void* ptr, size_t newsize) __attribute__((visibility("default")));
-
-extern void*
-calloc (size_t n, size_t size) __attribute__((visibility("default")));
-
-void*
-do_malloc (size_t s, int skip);
-
-void
-do_free (void* p, int skip);
-
-void*
-do_realloc (void* p, size_t s, int skip);
-
-#ifdef __cplusplus
+void trace_start (const char *file, int line, const char *func) {
+   pthread_mutex_lock (&trace_lock);
+   trace ("# %s (%s:%d) [thread %p]\n# ", func, file, line, pthread_self ());
 }
-#endif
 
-#endif /* MEMTRAQ_INTERNAL_H */
+void trace_end () {
+   fputc ('\n', stderr);
+   pthread_mutex_unlock (&trace_lock);
+}
+
+void trace (const char* fmt, ...) {
+   va_list args;
+
+   va_start (args, fmt);
+   mt_vsnprintf (trace_buf, sizeof (trace_buf), fmt, args);
+   trace_buf [sizeof (trace_buf) - 1] = '\0';
+   va_end (args);
+
+   fputs (trace_buf, stderr);
+}
 

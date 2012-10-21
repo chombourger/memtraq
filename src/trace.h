@@ -19,58 +19,32 @@
  *
  */
 
-#ifndef MEMTRAQ_INTERNAL_H
-#define MEMTRAQ_INTERNAL_H
+#ifndef MEMTRAQ_TRACE_H
+#define MEMTRAQ_TRACE_H
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
-
-#define _GNU_SOURCE 1
-
-#include <memtraq.h>
-#include <stddef.h>
-
-#include "clist.h"
-#include "trace.h"
-#include "lmm.h"
-
-#define MAX_BT 100
-#define DECODE_ADDRESSES 1
+#include <pthread.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern int debug;
+extern int trace_level;
+extern void trace_start (const char *file, int line, const char *func);
+extern void trace (const char *fmt, ...);
+extern void trace_end ();
 
-extern int
-mt_vsnprintf (char *str, size_t size, const char *format, va_list args);
-
-extern void*
-malloc (size_t s) __attribute__((visibility("default")));
-
-extern void
-free (void* ptr) __attribute__((visibility("default")));
-
-extern void*
-realloc (void* ptr, size_t newsize) __attribute__((visibility("default")));
-
-extern void*
-calloc (size_t n, size_t size) __attribute__((visibility("default")));
-
-void*
-do_malloc (size_t s, int skip);
-
-void
-do_free (void* p, int skip);
-
-void*
-do_realloc (void* p, size_t s, int skip);
+#define TRACE(x) do {						\
+   if (trace_level) {							\
+      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);	\
+      trace x;							\
+      trace_end ();						\
+   }								\
+} while (0)
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MEMTRAQ_INTERNAL_H */
+#endif /* MEMTRAQ_TRACE_H */
 

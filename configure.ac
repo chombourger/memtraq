@@ -26,7 +26,7 @@ gl_VISIBILITY
 # Checks for libraries.
 
 # Checks for header files.
-AC_CHECK_HEADERS([stddef.h stdlib.h string.h sys/time.h])
+AC_CHECK_HEADERS([stdarg.h stddef.h stdlib.h string.h sys/time.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_HEADER_STDBOOL
