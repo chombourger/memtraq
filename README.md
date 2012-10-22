@@ -146,16 +146,16 @@ Debugging memtraq
 memtraq is very likely having bugs! Should you need to debug it, debug traces
 can be turned on at runtime as follow:
 
-export MEMTRAQ_TRACE_<class>=<level>
+export MEMTRAQ\_TRACE\_\<class\>=\<level\>
 
-where <class> is one of:
+where \<class\> is one of:
 
    - HOOKS to trace entry/exit/results of standard functions hooked by memtraq
    - LMM to debug memtraq's internal memory allocator
    - MEMTRAQ to debug memtraq's wrappers for standard functions
    - MISC to enable miscelleaneous traces
 
-and where <level> is one of:
+and where \<level\> is one of:
 
    - 0 - disable this trace class
    - 1 - enable traces up to level 1
