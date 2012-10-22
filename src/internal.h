@@ -31,8 +31,11 @@
 #include <memtraq.h>
 #include <stddef.h>
 
-#include "clist.h"
+#define  TRACE_ENV_PREFIX "MEMTRAQ_TRACE_"
+#define  TRACE_TRC_FILE   "memtraq.trc"
 #include "trace.h"
+
+#include "clist.h"
 #include "lmm.h"
 
 #define MAX_BT 100

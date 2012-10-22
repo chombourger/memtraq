@@ -29,17 +29,57 @@
 extern "C" {
 #endif
 
-extern int trace_level;
+#ifndef TRACE_CLASS_DEFAULT
+#error "TRACE_CLASS_DEFAULT shall be defined!"
+#endif
+
+#ifndef TRACE_TRC_FILE
+#error "TRACE_TRC_FILE shall be defined!"
+#endif
+
+#define _TRACE_CONCAT2(a,b) a ## b
+#define TRACE_CONCAT2(a,b) _TRACE_CONCAT2(a,b)
+
+/* Declare trace classes. */
+#define  TRACE_CLASS(x) extern int __TRACE_CLASS_ ## x;
+#include TRACE_TRC_FILE
+#undef   TRACE_CLASS
+
+extern void trace_init ();
 extern void trace_start (const char *file, int line, const char *func);
 extern void trace (const char *fmt, ...);
 extern void trace_end ();
 
-#define TRACE(x) do {						\
-   if (trace_level) {							\
-      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);	\
-      trace x;							\
-      trace_end ();						\
-   }								\
+#define TRACE1(x) do {							\
+   if (TRACE_CONCAT2 (__TRACE_CLASS_,TRACE_CLASS_DEFAULT) >= 1) {	\
+      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);		\
+      trace x;								\
+      trace_end ();							\
+   }									\
+} while (0)
+
+#define TRACE2(x) do {							\
+   if (TRACE_CONCAT2 (__TRACE_CLASS_,TRACE_CLASS_DEFAULT) >= 2) {	\
+      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);		\
+      trace x;								\
+      trace_end ();							\
+   }									\
+} while (0)
+
+#define TRACE3(x) do {							\
+   if (TRACE_CONCAT2 (__TRACE_CLASS_,TRACE_CLASS_DEFAULT) >= 3) {	\
+      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);		\
+      trace x;								\
+      trace_end ();							\
+   }									\
+} while (0)
+
+#define TRACE4(x) do {							\
+   if (TRACE_CONCAT2 (__TRACE_CLASS_,TRACE_CLASS_DEFAULT) >= 4) {	\
+      trace_start (__FILE__, __LINE__, __PRETTY_FUNCTION__);		\
+      trace x;								\
+      trace_end ();							\
+   }									\
 } while (0)
 
 #ifdef __cplusplus

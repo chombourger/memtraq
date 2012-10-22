@@ -19,6 +19,7 @@
  *
  */
 
+#define TRACE_CLASS_DEFAULT MEMTRAQ
 #include "internal.h"
 
 #include <assert.h>
@@ -66,18 +67,6 @@ static unsigned int nested_level = 0;
   * environment variable). */
 static FILE *logf;
 
-int trace_level = 0;
-
-static void
-check_trace (void) {
-   const char *tracev;
-
-   tracev = getenv ("MEMTRAQ_TRACE");
-   if ((tracev != 0) && (strcmp (tracev, "") != 0)) {
-      trace_level = 1;
-   }
-}
-
 static void
 log_event (const char *event) {
 
@@ -112,7 +101,7 @@ do_init (void) {
    const char *resolve_value;
    bool result;
 
-   check_trace ();
+   trace_init ();
 
    fn = getenv ("MEMTRAQ_LOG");
    if (fn != 0) {
@@ -153,14 +142,14 @@ do_init (void) {
    old_realloc = (realloc_func_t) dlsym (RTLD_NEXT, "__libc_realloc");
    old_free = (free_func_t) dlsym (RTLD_NEXT, "__libc_free");
 
-   TRACE (("__libc_malloc=%p", old_malloc));
-   TRACE (("__libc_realloc=%p", old_realloc));
-   TRACE (("__libc_free=%p", old_free));
-   TRACE (("enabled=%d", enabled));
-   TRACE (("resolve=%d", resolve));
+   TRACE4 (("__libc_malloc=%p", old_malloc));
+   TRACE4 (("__libc_realloc=%p", old_realloc));
+   TRACE4 (("__libc_free=%p", old_free));
+   TRACE4 (("enabled=%d", enabled));
+   TRACE3 (("resolve=%d", resolve));
 
    result = (old_malloc != 0) && (old_free != 0) && (old_realloc != 0);
-   TRACE (("exiting with result=%d", result));
+   TRACE3 (("exiting with result=%d", result));
    return result;
 }
 
@@ -191,7 +180,7 @@ do_backtrace (int skip) {
    int   i,n;
    bool  resolved = false;
 
-   TRACE (("called with skip=%d", skip));
+   TRACE3 (("called with skip=%d", skip));
 
    n = backtrace (buffer, MAX_BT);
 
@@ -199,7 +188,7 @@ do_backtrace (int skip) {
    if (resolve == true) {
       char **strings;
 
-      TRACE (("calling backtrace_symbols()"));
+      TRACE4 (("calling backtrace_symbols()"));
       strings = backtrace_symbols (buffer, n);
       if (strings != 0) {
          for (i = skip; i < n; i++) {
@@ -209,7 +198,7 @@ do_backtrace (int skip) {
          resolved = true;
       }
       else {
-        TRACE (("backtrace_symbols() failed!"));
+        TRACE4 (("backtrace_symbols() failed!"));
       }
    }
 #endif /* DECODE_ADDRESSES */
@@ -220,7 +209,7 @@ do_backtrace (int skip) {
       }
    }
 
-   TRACE (("exit"));
+   TRACE3 (("exit"));
 }
 
 void *
@@ -228,11 +217,11 @@ do_malloc (size_t s, int skip) {
 
    void* result;
 
-   TRACE (("called with s=%u, skip=%d", s, skip));
+   TRACE3 (("called with s=%u, skip=%d", s, skip));
 
    pthread_mutex_lock (&lock);
    nested_level ++;
-   TRACE (("nested level = %u", nested_level));
+   TRACE4 (("nested level = %u", nested_level));
 
    if (nested_level > 1) {
       result = lmm_alloc (s);
@@ -261,18 +250,18 @@ do_malloc (size_t s, int skip) {
    nested_level --;
    pthread_mutex_unlock (&lock);
 
-   TRACE (("exiting with result=%p", result));
+   TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
 void
 do_free (void *p, int skip) {
 
-   TRACE (("called with p=%p, skip=%d", p, skip));
+   TRACE3 (("called with p=%p, skip=%d", p, skip));
 
    pthread_mutex_lock (&lock);
    nested_level ++;
-   TRACE (("nested level = %u", nested_level));
+   TRACE4 (("nested level = %u", nested_level));
 
    if (lmm_valid (p)) {
       lmm_free (p);
@@ -295,7 +284,7 @@ do_free (void *p, int skip) {
    nested_level --;
    pthread_mutex_unlock (&lock);
 
-   TRACE (("exit"));
+   TRACE3 (("exit"));
 }
 
 void *
@@ -308,11 +297,11 @@ do_realloc (void *p, size_t s, int skip) {
       return 0;
    }
 
-   TRACE (("called with p=%p, s=%u, skip=%d", p, s, skip));
+   TRACE3 (("called with p=%p, s=%u, skip=%d", p, s, skip));
 
    pthread_mutex_lock (&lock);
    nested_level ++;
-   TRACE (("nested level = %u", nested_level));
+   TRACE4 (("nested level = %u", nested_level));
 
    if (check_initialized () == false) {
       pthread_mutex_unlock (&lock);
@@ -334,7 +323,7 @@ do_realloc (void *p, size_t s, int skip) {
    nested_level --;
    pthread_mutex_unlock (&lock);
 
-   TRACE (("exiting with result=%p", result));
+   TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
@@ -380,11 +369,11 @@ void *
 malloc (size_t s) {
    void *result;
 
-   TRACE (("called with s=%u", s));
+   TRACE3 (("called with s=%u", s));
 
    result = do_malloc (s, 1);
 
-   TRACE (("exiting with result=%p", result));
+   TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
@@ -392,7 +381,7 @@ void *
 calloc (size_t n, size_t size) {
    void *result;
 
-   TRACE (("called with n=%u, size=%u", n, size));
+   TRACE3 (("called with n=%u, size=%u", n, size));
 
    size = size * n;
    result = do_malloc (size, 1);
@@ -400,7 +389,7 @@ calloc (size_t n, size_t size) {
       memset (result, 0, size);
    }
 
-   TRACE (("exiting with result=%p", result));
+   TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
@@ -408,7 +397,7 @@ void *
 realloc (void* p, size_t s) {
    void *result;
 
-   TRACE (("called with p=%p, s=%u", p, s));
+   TRACE3 (("called with p=%p, s=%u", p, s));
 
    if (p == 0) {
       result = do_malloc (s, 1);
@@ -421,7 +410,7 @@ realloc (void* p, size_t s) {
       result = do_realloc (p, s, 1);
    }
 
-   TRACE (("exiting with result=%p", result));
+   TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
@@ -432,10 +421,10 @@ free (void* p) {
       return;
    }
 
-   TRACE (("called with p=%p", p));
+   TRACE3 (("called with p=%p", p));
 
    do_free (p, 1);
 
-   TRACE (("exiting"));
+   TRACE3 (("exiting"));
 }
 

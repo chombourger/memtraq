@@ -19,6 +19,7 @@
  *
  */
 
+#define TRACE_CLASS_DEFAULT MEMTRAQ
 #include "internal.h"
 
 void*

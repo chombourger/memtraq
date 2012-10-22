@@ -130,6 +130,7 @@
  *
  */
 
+#define TRACE_CLASS_DEFAULT MEMTRAQ
 #include "internal.h"
 
 #if !HAVE_SNPRINTF || !HAVE_VSNPRINTF || !HAVE_ASPRINTF || !HAVE_VASPRINTF

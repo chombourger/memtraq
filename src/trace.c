@@ -19,26 +19,63 @@
  *
  */
 
+#define TRACE_CLASS_DEFAULT MEMTRAQ
 #include "internal.h"
 
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+/* Instantiate __TRACE_CLASS_<x> variables. */
+#define  TRACE_CLASS(x) int TRACE_CONCAT2(__TRACE_CLASS_,x) = 0;
+#include TRACE_TRC_FILE
+#undef   TRACE_CLASS
+
+/* Build a string array of environment variable names. */
+
+struct trace_class {
+   const char *name;
+   int *p_level;
+};
+
+#define  TRACE_CLASS(x) { TRACE_ENV_PREFIX #x, & TRACE_CONCAT2(__TRACE_CLASS_,x) },
+static const struct trace_class trace_classes[] = {
+#include TRACE_TRC_FILE
+#undef   TRACE_CLASS
+   { 0, 0 }
+};
 
 static pthread_mutex_t trace_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static char trace_buf [256];
 
-void trace_start (const char *file, int line, const char *func) {
+void
+trace_init () {
+   const struct trace_class *p_trace_class;
+   for (p_trace_class = trace_classes; p_trace_class->name != 0; p_trace_class ++) {
+      const char *setting = getenv (p_trace_class->name);
+      int *p_level = p_trace_class->p_level;
+      if (setting != 0) {
+         long value = strtol (setting, 0, 0);
+         *p_level = (int) (value);
+      }
+   }
+}
+
+void
+trace_start (const char *file, int line, const char *func) {
    pthread_mutex_lock (&trace_lock);
    trace ("# %s (%s:%d) [thread %p]\n# ", func, file, line, pthread_self ());
 }
 
-void trace_end () {
+void
+trace_end () {
    fputc ('\n', stderr);
    pthread_mutex_unlock (&trace_lock);
 }
 
-void trace (const char* fmt, ...) {
+void
+trace (const char* fmt, ...) {
    va_list args;
 
    va_start (args, fmt);
