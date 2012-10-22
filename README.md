@@ -140,3 +140,31 @@ where:
      file from the target so that memtraq.pl can find out where shared
      libraries have been loaded
  
+Debugging memtraq
+-----------------
+
+memtraq is very likely having bugs! Should you need to debug it, debug traces
+can be turned on at runtime as follow:
+
+export MEMTRAQ_TRACE_<class>=<level>
+
+where <class> is one of:
+
+   - HOOKS to trace entry/exit/results of standard functions hooked by memtraq
+   - LMM to debug memtraq's internal memory allocator
+   - MEMTRAQ to debug memtraq's wrappers for standard functions
+   - MISC to enable miscelleaneous traces
+
+and where <level> is one of:
+
+   - 0 - disable this trace class
+   - 1 - enable traces up to level 1
+   - 2 - enable traces up to level 2
+   - 3 - enable traces up to level 3
+   - 4 - enable traces up to level 4
+
+Note: debug traces are sent to stderr. It should also be noted that the trace system
+may result in a different scheduling if enabled in a multi-threaded application as
+a lock is used to protect the buffer used to store traces in their expanded form (i.e.,
+with arguments evaluated).
+
