@@ -54,6 +54,9 @@ static bool enabled = true;
 /** Boolean for symbols to be resolved (defaults to true). */
 static bool resolve = true;
 
+/** Boolean for backtrace to be emitted for free() (defaults to false). */
+static bool backtrace_free = false;
+
 /** Serial number for tags created with memtraq_tag(). */
 static unsigned int tag_serial = 0;
 
@@ -99,6 +102,7 @@ do_init (void) {
    const char *fn;
    const char *enabled_value;
    const char *resolve_value;
+   const char *backtrace_free_value;
    bool result;
 
    trace_init ();
@@ -135,6 +139,16 @@ do_init (void) {
       }
       else {
          resolve = true;
+      }
+   }
+
+   backtrace_free_value = getenv ("MEMTRAQ_BACKTRACE_FREE");
+   if (backtrace_free_value != 0) {
+      if (strcmp (backtrace_free_value, "0") == 0) {
+         backtrace_free = false;
+      }
+      else {
+         backtrace_free = true;
       }
    }
 
@@ -276,7 +290,11 @@ do_free (void *p, int skip) {
 
             /* Log operation and backtrace. */
             log_event ("free");
-            fprintf (logf, "%p;void;void\n", p);
+            fprintf (logf, "%p;void;void", p);
+            if (backtrace_free) {
+               do_backtrace (skip + 2);
+            }
+            fprintf (logf, "\n");
          }
       }
    }
