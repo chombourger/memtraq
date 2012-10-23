@@ -67,6 +67,11 @@ output otherwise goes to stdout!
 If set to 0, memtraq will not try to resolve addresses to symbol names. This
 is recommended for slow devices as backtrace\_symbols() is costly operation.
 
+4) MEMTRAQ\_BACKTRACE\_FREE
+
+If set to non-zero, memtraq will emit the backtrace for the calls to free()
+or alike.
+
 Processing memtraq log files
 ----------------------------
 
