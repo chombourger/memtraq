@@ -21,7 +21,9 @@ use strict;
 use warnings;
 
 use File::Basename;
+use FileHandle;
 use Getopt::Long;
+use IPC::Open2;
 
 my %opts;
 
@@ -46,12 +48,16 @@ my $before = '';
 my $after = '';
 my $map = '';
 my $paths = '';
+my $show_all = 0;
+my $show_grouped = 0;
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
    'after|a=s' => \$after,
    'map|m=s' => \$map,
    'paths|p=s' => \$paths,
+   'show-all|A' => \$show_all,
+   'show-grouped|G' => \$show_grouped,
 );
 
 my $file=$ARGV[0];
@@ -91,55 +97,54 @@ if ($map ne '') {
    close (MAP);
 }
 
+sub object_from_addr {
+   my $a = $_[0];
+   my $result = "unknown";
+
+   if ($a =~ /^0x[0-9a-f]+$/) {
+      $a = hex ($a);
+      foreach my $m (keys %maps) {
+         my $start = $maps{$m}{'start'};
+         my $end   = $maps{$m}{'end'};
+         if (($start <= $a) && ($a <= $end)) {
+            $result = $maps{$m}{'file'};
+            return $result;
+         }
+      }
+   }
+   return $result;
+}
+
+sub offset_from_addr {
+   my $a = $_[0];
+   my $result = 0;
+
+   if ($a =~ /^0x[0-9a-f]+$/) {
+      $a = hex ($a);
+      foreach my $m (keys %maps) {
+         my $start = $maps{$m}{'start'};
+         my $end   = $maps{$m}{'end'};
+         if (($start <= $a) && ($a <= $end)) {
+            return $a - $start;
+         }
+      }
+   }
+   return $result;
+}
+
 sub decode {
    my $a = $_[0];
    my $loc = $a;
    my %result;
 
+   # Default values
    $result{'object'} = "unknown";
-   $result{'loc'} = $a;
+   $result{'loc'}    = $a;
 
    if ($a =~ /^0x[0-9a-f]+$/) {
-      $a = hex ($a);
       if (defined ($syms{$a})) {
          $result{'object'} = $syms{$a}{'object'};
          $result{'loc'} = $syms{$a}{'loc'};
-      }
-      else {
-         foreach my $m (keys %maps) {
-            my $start = $maps{$m}{'start'};
-            my $end   = $maps{$m}{'end'};
-            my $obj   = $maps{$m}{'file'};
-            if (($start <= $a) && ($a <= $end)) {
-               my @paths_array = split (/:/, $paths);
-               foreach my $p (@paths_array) {
-                  if (-e $p . $obj) {
-                     $obj = $p . $obj;
-                  }
-                  elsif (-e $p . "/" . basename ($obj)) {
-                     $obj = $p . "/" . basename ($obj);
-                  }
-               }
-               if (-e $obj) {
-                  my $offset = $a - $start;
-                  my $type = `file -L -b $obj`;
-                  if ($type =~ / executable,/) {
-                     $offset = $a;
-                  }
-                  my $cmd = sprintf ("addr2line -i -p -C -f -e %s 0x%x", $obj, $offset);
-                  $loc = `$cmd`;
-                  $loc =~ s/\n//g;
-                  $loc = sprintf ("0x%08x: %s [%s]", $a, $loc, basename ($obj));
-               }
-               else {
-                  $loc = sprintf ("0x%08x: [%s]", $a, $obj);
-               }
-               $result{'object'} = $obj;
-               $result{'loc'} = $loc;
-               $syms{$a}{'object'} = $obj;
-               $syms{$a}{'loc'} = $loc;
-            }
-         }
       }
    }
    return %result;
@@ -349,7 +354,7 @@ foreach my $line (<DMALLOC>)  {
 
       # Extract backtrace
       my $bt = $line;
-      $bt =~ s/^free\;void\;void\;0x[0-9a-f]+\;//;
+      $bt =~ s/^free\;0x[0-9a-f]+\;void\;void\;//;
       $bt =~ s/'.*//g;
 
       if ($log != 0) {
@@ -486,9 +491,92 @@ for ($y = $graph_rows; $y >= 0; $y--) {
 }
 printf("     0%s%5s\n", ' ' x ($graph_cols-5), $x_label);
 
+#----------------------------------------------------------------------------
+# Decode all addresses
+#----------------------------------------------------------------------------
+
+my %objects;
+
 print "\n";
-print "Listing of all memory blocks still allocated:\n";
-print "---------------------------------------------\n";
+
+# First pass, get all the addresses we need to decode per object
+# Effectively building a hash of hashes where the 1st level are
+# the objects and the 2nd level the addresses from that object.
+# Also check memory usage on a per object and on a per thread
+# basis.
+foreach my $ptr (keys %chunks) {
+   my $btstr = $chunks{$ptr}{'backtrace'};
+   my $thread_name = $chunks{$ptr}{'thread_name'};
+   my $thread_id = $chunks{$ptr}{'thread_id'};
+   my @bt = split (/\;/, $btstr);
+   if (defined $bt[0]) {
+      my $obj = object_from_addr ($bt[0]);
+      if (defined ($obj)) {
+         if (defined ($usage_by_objects{$obj})) {
+            $usage_by_objects{$obj} += $chunks{$ptr}{'size'};
+         }
+         else {
+            $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
+         }
+      }
+      if (defined ($usage_by_threads{$thread_id})) {
+         $usage_by_threads{$thread_id} += $chunks{$ptr}{'size'};
+      }
+      else {
+         $usage_by_threads{$thread_id} = $chunks{$ptr}{'size'};
+      }
+   }
+   foreach $a (@bt) {
+      my $obj = object_from_addr ($a);
+      if ($obj ne "unknown") {
+         $objects{$obj}{$a} = "???";
+      }
+   }
+}
+
+# Second pass
+foreach my $obj (keys %objects) {
+   my $file = $obj;
+   my @paths_array = split (/:/, $paths);
+   foreach my $p (@paths_array) {
+      if (-e $p . $obj) {
+         $file = $p . $obj;
+      }
+      elsif (-e $p . "/" . basename ($obj)) {
+         $file = $p . "/" . basename ($obj);
+      }
+   }
+   if (-e $file) {
+      my $type = `file -L -b $file`;
+      my $cmd = sprintf ("addr2line -i -p -C -f -e %s", $file);
+      print "Reading symbols from " . $file . "\n";
+      my $pid = open2 (*RP, *WP, $cmd);
+      for my $a ( keys %{ $objects{$obj} } ) {
+         my $offset = offset_from_addr ($a);
+         if ($type =~ / executable,/) {
+            $offset = hex($a);
+         }
+         my $in = sprintf ("0x%x", $offset);
+         print WP $in . "\n";
+         my $loc = <RP>;
+         $loc =~ s/\n//;
+         $syms{$a}{'object'} = $obj;
+         $syms{$a}{'loc'} = $loc;
+      }
+      close (RP);
+      close (WP);
+   }
+}
+
+#----------------------------------------------------------------------------
+# Dump all blocks still in memory
+#----------------------------------------------------------------------------
+
+if ($show_all) {
+    print "\n";
+    print "Listing of all memory blocks still allocated:\n";
+    print "---------------------------------------------\n";
+}
 
 my $idx = 1;
 foreach my $ptr (keys %chunks) {
@@ -499,14 +587,15 @@ foreach my $ptr (keys %chunks) {
        print "warn: $ptr does not have size!\n";
     }
 
-    print "\nblock #" . $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
-    print "\taddress  : " . $ptr . "\n";
-    print "\ttimestamp: " . $chunks{$ptr}{'timestamp'} . "\n";
-    print "\tthread   : " . $thread_name . " (" . $thread_id . ")\n";
-    print "\tcallstack:\n";
+    if ($show_all) {
+        print "\nblock #" . $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
+        print "\taddress  : " . $ptr . "\n";
+        print "\ttimestamp: " . $chunks{$ptr}{'timestamp'} . "\n";
+        print "\tthread   : " . $thread_name . " (" . $thread_id . ")\n";
+        print "\tcallstack:\n";
+    }
 
     my $btstr = $chunks{$ptr}{'backtrace'};
-    my @bt = split (/\;/, $btstr);
     my $count = 1;
     my $size = 0;
     if (defined ($hotspots{$btstr}{'count'})) {
@@ -515,28 +604,13 @@ foreach my $ptr (keys %chunks) {
     }
     $hotspots{$btstr}{'count'} = $count;
     $hotspots{$btstr}{'size'}  = $size;
-    my $level = 0;
-    foreach $a (@bt) {
-       my %result = decode ($a);
-       print "\t\t" . $result{'loc'} . "\n";
-       my $obj = $result{'object'};
-       if ($level == 0) {
-          if (defined ($obj)) {
-             if (defined ($usage_by_objects{$obj})) {
-                $usage_by_objects{$obj} += $chunks{$ptr}{'size'};
-             }
-             else {
-                $usage_by_objects{$obj} = $chunks{$ptr}{'size'};
-             }
-          }
-          if (defined ($usage_by_threads{$thread_id})) {
-             $usage_by_threads{$thread_id} += $chunks{$ptr}{'size'};
-          }
-          else {
-             $usage_by_threads{$thread_id} = $chunks{$ptr}{'size'};
-          }
+
+    my @bt = split (/\;/, $btstr);
+    if ($show_all) {
+       foreach $a (@bt) {
+           my %result = decode ($a);
+           print "\t\t" . $result{'loc'} . "\n";
        }
-       $level = $level + 1;
     }
     $idx = $idx + 1;
 }
@@ -563,18 +637,21 @@ foreach my $thr (keys %usage_by_threads) {
 }
 printf ("%-40s %24u (100%%)\n", "total", $total);
 
-print "\n";
-print "Allocated blocks grouped by callstacks:\n";
-print "---------------------------------------\n";
+if ($show_grouped) {
 
-foreach my $btstr (sort {$hotspots{$b}{'size'} <=> $hotspots{$a}{'size'} } keys %hotspots) {
-   print "\n";
-   print $hotspots{$btstr}{'count'} . " allocation(s) for a total of " . 
-         $hotspots{$btstr}{'size'} . " bytes from:\n";
-   my @bt = split (/\;/, $btstr);
-   foreach my $a (@bt) {
-       my %result = decode ($a);
-       print "\t\t" . $result{'loc'} . "\n";
-   }
+    print "\n";
+    print "Allocated blocks grouped by callstacks:\n";
+    print "---------------------------------------\n";
+
+    foreach my $btstr (sort {$hotspots{$b}{'size'} <=> $hotspots{$a}{'size'} } keys %hotspots) {
+        print "\n";
+        print $hotspots{$btstr}{'count'} . " allocation(s) for a total of " . 
+            $hotspots{$btstr}{'size'} . " bytes from:\n";
+        my @bt = split (/\;/, $btstr);
+        foreach my $a (@bt) {
+            my %result = decode ($a);
+            print "\t\t" . $result{'loc'} . "\n";
+        }
+    }
 }
 
