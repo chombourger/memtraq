@@ -581,6 +581,14 @@ foreach my $obj (keys %objects) {
       close (RP);
       close (WP);
    }
+   else {
+      for my $a ( keys %{ $objects{$obj} } ) {
+         my $loc = sprintf ("%s: ??? [%s]", $a, $obj);
+         $syms{$a}{'object'} = $obj;
+         $syms{$a}{'loc'} = $loc;
+         debug "$a => $loc ($obj not found)"
+      }
+   }
 }
 
 #----------------------------------------------------------------------------
