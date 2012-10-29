@@ -50,15 +50,24 @@ my $map = '';
 my $paths = '';
 my $show_all = 0;
 my $show_grouped = 0;
+my $do_debug = 0;
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
    'after|a=s' => \$after,
+   'debug|d' => \$do_debug,
    'map|m=s' => \$map,
    'paths|p=s' => \$paths,
    'show-all|A' => \$show_all,
    'show-grouped|G' => \$show_grouped,
 );
+
+sub debug {
+   my $msg = $_[0];
+   if ($do_debug) {
+      print STDERR "DEBUG " . $msg . "\n";
+   }
+}
 
 my $file=$ARGV[0];
 open (DMALLOC, $file) or die("Could not open " . $file . "!");
@@ -69,6 +78,7 @@ my %syms;
 # Load provided map file into the 'maps' array
 if ($map ne '') {
    open (MAP, $map) or die("Could not open map " . $map . "!");
+   debug ("reading map file '$map'...");
    foreach my $line (<MAP>)  {
       $line =~ s/\n//;
       # Executable regions only
@@ -91,6 +101,7 @@ if ($map ne '') {
             $maps{$start}{'file'}  = $line;
             $maps{$start}{'start'} = hex ($start);
             $maps{$start}{'end'}   = hex ($end);
+            debug "added map entry '$line' $start-$end";
          }
       }
    }
@@ -548,8 +559,9 @@ foreach my $obj (keys %objects) {
    }
    if (-e $file) {
       my $type = `file -L -b $file`;
-      my $cmd = sprintf ("addr2line -i -p -C -f -e %s", $file);
+      my $cmd = sprintf ("addr2line -C -f -p -e %s", $file);
       print "Reading symbols from " . $file . "\n";
+      debug $cmd;
       my $pid = open2 (*RP, *WP, $cmd);
       for my $a ( keys %{ $objects{$obj} } ) {
          my $offset = offset_from_addr ($a);
@@ -557,11 +569,14 @@ foreach my $obj (keys %objects) {
             $offset = hex($a);
          }
          my $in = sprintf ("0x%x", $offset);
+         debug "writing $in to pipe ($a)";
          print WP $in . "\n";
          my $loc = <RP>;
          $loc =~ s/\n//;
+         $loc = sprintf ("%s: %s [%s 0x%x]", $a, $loc, $obj, $offset);
          $syms{$a}{'object'} = $obj;
          $syms{$a}{'loc'} = $loc;
+         debug ("resolved $a to $loc ('$obj')");
       }
       close (RP);
       close (WP);
