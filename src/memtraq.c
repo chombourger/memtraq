@@ -271,6 +271,10 @@ do_malloc (size_t s, int skip) {
 void
 do_free (void *p, int skip) {
 
+   if (p == 0) {
+      return;
+   }
+
    TRACE3 (("called with p=%p, skip=%d", p, skip));
 
    pthread_mutex_lock (&lock);
