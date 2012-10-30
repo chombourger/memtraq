@@ -520,8 +520,8 @@ foreach my $ptr (keys %chunks) {
    my $thread_name = $chunks{$ptr}{'thread_name'};
    my $thread_id = $chunks{$ptr}{'thread_id'};
    my @bt = split (/\;/, $btstr);
-   if (defined $bt[0]) {
-      my $obj = object_from_addr ($bt[0]);
+   if (defined $bt[1]) {
+      my $obj = object_from_addr ($bt[1]);
       if (defined ($obj)) {
          if (defined ($usage_by_objects{$obj})) {
             $usage_by_objects{$obj} += $chunks{$ptr}{'size'};

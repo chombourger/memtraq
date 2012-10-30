@@ -31,7 +31,7 @@ malloc (size_t s) {
 
    TRACE3 (("called with s=%u", s));
 
-   result = do_malloc (s, 1);
+   result = do_malloc (s, 0);
 
    TRACE3 (("exiting with result=%p", result));
    return result;
@@ -44,7 +44,7 @@ calloc (size_t n, size_t size) {
    TRACE3 (("called with n=%u, size=%u", n, size));
 
    size = size * n;
-   result = do_malloc (size, 1);
+   result = do_malloc (size, 0);
    if (result != 0) {
       memset (result, 0, size);
    }
@@ -60,14 +60,14 @@ realloc (void* p, size_t s) {
    TRACE3 (("called with p=%p, s=%u", p, s));
 
    if (p == 0) {
-      result = do_malloc (s, 1);
+      result = do_malloc (s, 0);
    }
    else if (s == 0) {
-      do_free (p, 1);
+      do_free (p, 0);
       result = 0;
    }
    else {
-      result = do_realloc (p, s, 1);
+      result = do_realloc (p, s, 0);
    }
 
    TRACE3 (("exiting with result=%p", result));
@@ -83,7 +83,7 @@ free (void* p) {
 
    TRACE3 (("called with p=%p", p));
 
-   do_free (p, 1);
+   do_free (p, 0);
 
    TRACE3 (("exiting"));
 }
@@ -94,7 +94,7 @@ operator new (size_t size) {
    void *result;
    TRACE3 (("called with size=%u", size));
 
-   result = do_malloc (size, 1);
+   result = do_malloc (size, 0);
 
    TRACE3 (("exiting with result=%p", result));
    return result;
@@ -106,7 +106,7 @@ operator new[] (size_t size) {
    void *result;
    TRACE3 (("called with size=%u", size));
 
-   result = do_malloc (size, 1);
+   result = do_malloc (size, 0);
 
    TRACE3 (("exiting with result=%p", result));
    return result;
@@ -118,7 +118,7 @@ operator new (std::size_t size, std::nothrow_t const&) {
    void *result;
    TRACE3 (("called with size=%u", size));
 
-   result = do_malloc (size, 1);
+   result = do_malloc (size, 0);
 
    TRACE3 (("exiting with result=%p", result));
    return result;
@@ -130,7 +130,7 @@ operator new[] (std::size_t size, std::nothrow_t const&) {
    void *result;
    TRACE3 (("called with size=%u", size));
 
-   result = do_malloc (size, 1);
+   result = do_malloc (size, 0);
 
    TRACE3 (("exiting with result=%p", result));
    return result;
@@ -140,28 +140,28 @@ void
 operator delete (void *ptr) {
 
    TRACE3 (("called with ptr=%p", ptr));
-   do_free (ptr, 1);
+   do_free (ptr, 0);
    TRACE3 (("exiting"));
 }
 
 void
 operator delete[] (void *ptr) {
    TRACE3 (("called with ptr=%p", ptr));
-   do_free (ptr, 1);
+   do_free (ptr, 0);
    TRACE3 (("exiting"));
 }
 
 void
 operator delete (void *ptr, const std::nothrow_t&) {
    TRACE3 (("called with ptr=%p", ptr));
-   do_free (ptr, 1);
+   do_free (ptr, 0);
    TRACE3 (("exiting"));
 }
 
 void
 operator delete[] (void *ptr, const std::nothrow_t&) {
    TRACE3 (("called with ptr=%p", ptr));
-   do_free (ptr, 1);
+   do_free (ptr, 0);
    TRACE3 (("exiting"));
 }
  
