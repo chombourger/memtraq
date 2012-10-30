@@ -22,6 +22,7 @@
 #define TRACE_CLASS_DEFAULT HOOKS
 #include "internal.h"
 
+#include <new>
 #include <string.h>
 
 void *
@@ -111,6 +112,30 @@ operator new[] (size_t size) {
    return result;
 }
 
+void *
+operator new (std::size_t size, std::nothrow_t const&) {
+
+   void *result;
+   TRACE3 (("called with size=%u", size));
+
+   result = do_malloc (size, 1);
+
+   TRACE3 (("exiting with result=%p", result));
+   return result;
+}
+
+void *
+operator new[] (std::size_t size, std::nothrow_t const&) {
+
+   void *result;
+   TRACE3 (("called with size=%u", size));
+
+   result = do_malloc (size, 1);
+
+   TRACE3 (("exiting with result=%p", result));
+   return result;
+}
+
 void
 operator delete (void *ptr) {
 
@@ -126,3 +151,17 @@ operator delete[] (void *ptr) {
    TRACE3 (("exiting"));
 }
 
+void
+operator delete (void *ptr, const std::nothrow_t&) {
+   TRACE3 (("called with ptr=%p", ptr));
+   do_free (ptr, 1);
+   TRACE3 (("exiting"));
+}
+
+void
+operator delete[] (void *ptr, const std::nothrow_t&) {
+   TRACE3 (("called with ptr=%p", ptr));
+   do_free (ptr, 1);
+   TRACE3 (("exiting"));
+}
+ 
