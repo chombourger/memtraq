@@ -50,6 +50,7 @@ my $map = '';
 my $paths = '';
 my $show_all = 0;
 my $show_grouped = 0;
+my $show_unknown = 0;
 my $do_debug = 0;
 
 GetOptions(\%opts,
@@ -60,6 +61,7 @@ GetOptions(\%opts,
    'paths|p=s' => \$paths,
    'show-all|A' => \$show_all,
    'show-grouped|G' => \$show_grouped,
+   'show-unknown|U' => \$show_unknown,
 );
 
 sub debug {
@@ -227,13 +229,12 @@ my %chunks;
 my $total = 0;
 my $allocs = 0;
 my $frees = 0;
-my $unknown_frees = 0;
+my %unknown_frees;
 my $reallocs = 0;
 my $log = 1;
 my %hotspots;
 my $lines = 0;
 
-my @fields;
 my @heap_history;
 
 if ($after ne '') {
@@ -365,6 +366,7 @@ foreach my $line (<DMALLOC>)  {
 
       # Extract backtrace
       my $bt = $line;
+      $bt =~ s/\(nil\)/0x0/g;
       $bt =~ s/^free\;0x[0-9a-f]+\;void\;void\;//;
       $bt =~ s/'.*//g;
 
@@ -374,7 +376,11 @@ foreach my $line (<DMALLOC>)  {
             $total = $total - $size;
          }
          else {
-            $unknown_frees ++;
+            my $count = 1;
+            if (defined $unknown_frees{$bt}) {
+               $count = $count + $unknown_frees{$bt} 
+            }
+            $unknown_frees{$bt} = $count;
          }
 
          $frees ++;
@@ -386,6 +392,7 @@ foreach my $line (<DMALLOC>)  {
 
       # Extract backtrace
       my $bt = $line;
+      $bt =~ s/\(nil\)/0x0/g;
       $bt =~ s/^realloc\;0x[0-9a-f]+\;\d+\;0x[0-9a-f]+\;//;
       $bt =~ s/'.*//g;
 
@@ -396,11 +403,13 @@ foreach my $line (<DMALLOC>)  {
 
       # Extract new size
       my $size = $line;
+      $size =~ s/\(nil\)/0x0/g;
       $size =~ s/^realloc\;0x[0-9a-f]+\;//;
       $size =~ s/\;.*//;
 
       # Extract new ptr
       my $newptr = $line;
+      $newptr =~ s/\(nil\)/0x0/g;
       $newptr =~ s/^realloc\;0x[0-9a-f]+\;\d+\;//;
       $newptr =~ s/\;.*//;
 
@@ -437,8 +446,8 @@ print "\n";
 
 print $total . " bytes (" . keys(%chunks) . " blocks) in use\n";
 print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
-if ($unknown_frees > 0) {
-   print "Note: " . $unknown_frees . " frees for unknown blocks!\n";
+if (scalar (%unknown_frees) > 0) {
+   print "Note: " . scalar(%unknown_frees) . " frees for unknown blocks!\n";
 }
 print "\n";
 
@@ -676,5 +685,26 @@ if ($show_grouped) {
             print "\t\t" . $result{'loc'} . "\n";
         }
     }
+}
+
+#----------------------------------------------------------------------------
+# Dump unknown frees
+#----------------------------------------------------------------------------
+
+if (($show_unknown) && (scalar (%unknown_frees) > 0)) {
+
+    print "\n";
+    print "Free operations without a matching allocation:\n";
+    print "----------------------------------------------\n";
+
+    foreach my $btstr (sort {$unknown_frees{$b} <=> $unknown_frees{$a}} keys %unknown_frees) {
+       print "\n";
+       print $unknown_frees{$btstr} . " free(s) from:\n";
+       my @bt = split (/\;/, $btstr);
+       foreach my $a (@bt) {
+          my %result = decode ($a);
+          print "\t\t" . $result{'loc'} . "\n";
+       }
+   }
 }
 
