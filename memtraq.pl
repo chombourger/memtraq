@@ -39,6 +39,8 @@ my $heap_max = 0;
 my %usage_by_objects;
 my %usage_by_threads;
 
+# Graph output file (--graph)
+my $graph = '';
 # Number of columns for graphs 
 my $graph_cols = 80;
 # Number of rows for graphs 
@@ -47,6 +49,7 @@ my $graph_rows = 40;
 my $before = '';
 my $after = '';
 my $map = '';
+my $node_fraction = 0.20;
 my $paths = '';
 my $show_all = 0;
 my $show_grouped = 0;
@@ -57,7 +60,9 @@ GetOptions(\%opts,
    'before|b=s' => \$before,
    'after|a=s' => \$after,
    'debug|d' => \$do_debug,
+   'graph|g=s' => \$graph,
    'map|m=s' => \$map,
+   'node-fraction|n=f' => \$node_fraction,
    'paths|p=s' => \$paths,
    'show-all|A' => \$show_all,
    'show-grouped|G' => \$show_grouped,
@@ -446,7 +451,7 @@ print "\n";
 
 print $total . " bytes (" . keys(%chunks) . " blocks) in use\n";
 print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
-if (scalar (%unknown_frees) > 0) {
+if (scalar (keys %unknown_frees) > 0) {
    print "Note: " . scalar(%unknown_frees) . " frees for unknown blocks!\n";
 }
 print "\n";
@@ -481,6 +486,7 @@ for (my $i = 1; $i < $samples; $i ++) {
       $graph[$x][$j] = ':';
    }
 }
+undef @heap_history;
 
 # Print X and Y axis
 $graph[0][0] = '+';                                            # axes join point
@@ -510,6 +516,7 @@ for ($y = $graph_rows; $y >= 0; $y--) {
     }
 }
 printf("     0%s%5s\n", ' ' x ($graph_cols-5), $x_label);
+undef @graph;
 
 #----------------------------------------------------------------------------
 # Decode all addresses
@@ -566,6 +573,7 @@ foreach my $obj (keys %objects) {
          $file = $p . "/" . basename ($obj);
       }
    }
+   debug "Checking for $file...";
    if (-e $file) {
       my $type = `file -L -b $file`;
       my $cmd = sprintf ("addr2line -C -f -p -e %s", $file);
@@ -582,7 +590,7 @@ foreach my $obj (keys %objects) {
          print WP $in . "\n";
          my $loc = <RP>;
          $loc =~ s/\n//;
-         $loc = sprintf ("%s: %s [%s 0x%x]", $a, $loc, $obj, $offset);
+         $loc = sprintf ("%s: %s [%s 0x%x]", $a, $loc, basename ($obj), $offset);
          $syms{$a}{'object'} = $obj;
          $syms{$a}{'loc'} = $loc;
          debug ("resolved $a to $loc ('$obj')");
@@ -592,7 +600,7 @@ foreach my $obj (keys %objects) {
    }
    else {
       for my $a ( keys %{ $objects{$obj} } ) {
-         my $loc = sprintf ("%s: ??? [%s]", $a, $obj);
+         my $loc = sprintf ("%s: ??? [%s]", $a, basename ($obj));
          $syms{$a}{'object'} = $obj;
          $syms{$a}{'loc'} = $loc;
          debug "$a => $loc ($obj not found)"
@@ -706,5 +714,83 @@ if (($show_unknown) && (scalar (%unknown_frees) > 0)) {
           print "\t\t" . $result{'loc'} . "\n";
        }
    }
+}
+
+#----------------------------------------------------------------------------
+# Create graph via dot
+#----------------------------------------------------------------------------
+
+if ($graph ne '') {
+
+   my %nodes;
+   my %links;
+   
+   foreach my $ptr (keys %chunks) {
+      my $btstr = $chunks{$ptr}{'backtrace'};
+      my $sz = $chunks{$ptr}{'size'};
+      my @bt = split (/\;/, $btstr);
+      my $level = 0;
+      my $previous;
+      foreach $a (@bt) {
+         # Create a new node
+         if (not defined $nodes{$a}) {
+            my %result = decode ($a);
+            $nodes{$a}{'loc'}  = $result{'loc'};
+            $nodes{$a}{'size'} = 0;
+         }
+         # Create a link
+         if ($level > 0) {
+            if ($previous ne $a) {
+               if (not defined $links{$a}{$previous}) {
+                  $links{$a}{$previous} = 0;
+               }
+               debug "adding $sz bytes to link $a -> $previous";
+               $links{$a}{$previous} += $sz;
+            }
+         }
+         # Add allocated memory to this node
+         # FIXME: check for recursive functions
+         debug "adding $sz bytes to node $a (" . $nodes{$a}{'loc'} . ")";
+         $nodes{$a}{'size'} += $sz;
+         $level ++;
+         $previous = $a;
+      }
+   }
+
+   open (GRAPH, ">" . $graph);
+   print GRAPH "digraph live_objects {\n";
+   print GRAPH "   size=\"10,10\"\n";
+   foreach my $n (keys %nodes) {
+      my $sz = $nodes{$n}{'size'};
+      my $f = $sz / $total;
+      if ($f < $node_fraction) {
+         debug "not creating node $n (" . $nodes{$n}{'loc'} . "): $sz / $total ($f)";
+         next;
+      }
+      my $label = $nodes{$n}{'loc'};
+      $label =~ s/^0x[0-9a-f]+: //;
+      $label =~ s/ at /\\n/;
+      print GRAPH "   F$n [shape=box,label=\"" . $label . "\"];\n";
+   }
+   # create link in dot output
+   foreach my $n (keys %nodes) {
+      debug "process links originating from $n";
+      my $f = $nodes{$n}{'size'} / $total;
+      # if the source node has been filtered out, skip all its links
+      next if ($f < $node_fraction);
+      foreach my $t (keys %{$links{$n}}) {
+         debug "considering target node $t";
+         $f = $nodes{$t}{'size'} / $total;
+         if ($f < $node_fraction) {
+            debug "skipping link " . $nodes{$n}{'loc'} . " -> " . $nodes{$t}{'loc'};
+            debug "source node: " . $nodes{$n}{'size'} . " / " . $total;
+            debug "target node: " . $nodes{$t}{'size'} . " / " . $total;
+            next;
+         }
+         print GRAPH "   F$n -> F$t [label=\"" . $links{$n}{$t} . "\"];\n";
+      }
+   }
+   print GRAPH "}\n";
+   close (GRAPH);
 }
 
