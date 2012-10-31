@@ -47,6 +47,7 @@ my $graph_cols = 80;
 my $graph_rows = 40;
 
 my $before = '';
+my $addr2line = 'addr2line';
 my $after = '';
 my $map = '';
 my $node_fraction = 0.20;
@@ -58,6 +59,7 @@ my $do_debug = 0;
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
+   'addr2line=s' => \$addr2line,
    'after|a=s' => \$after,
    'debug|d' => \$do_debug,
    'graph|g=s' => \$graph,
@@ -576,7 +578,7 @@ foreach my $obj (keys %objects) {
    debug "Checking for $file...";
    if (-e $file) {
       my $type = `file -L -b $file`;
-      my $cmd = sprintf ("addr2line -C -f -p -e %s", $file);
+      my $cmd = sprintf ($addr2line . " -C -f -p -e %s", $file);
       print "Reading symbols from " . $file . "\n";
       debug $cmd;
       my $pid = open2 (*RP, *WP, $cmd);
