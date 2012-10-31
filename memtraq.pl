@@ -80,7 +80,7 @@ my $file=$ARGV[0];
 open (DMALLOC, $file) or die("Could not open " . $file . "!");
 
 my %maps;
-my %syms;
+my %hsyms;
 
 # Load provided map file into the 'maps' array
 if ($map ne '') {
@@ -160,9 +160,9 @@ sub decode {
    $result{'loc'}    = $a;
 
    if ($a =~ /^0x[0-9a-f]+$/) {
-      if (defined ($syms{$a})) {
-         $result{'object'} = $syms{$a}{'object'};
-         $result{'loc'} = $syms{$a}{'loc'};
+      if (defined ($hsyms{$a})) {
+         $result{'object'} = $hsyms{$a}{'object'};
+         $result{'loc'} = $hsyms{$a}{'loc'};
       }
    }
    return %result;
@@ -591,8 +591,8 @@ foreach my $obj (keys %objects) {
          my $loc = <RP>;
          $loc =~ s/\n//;
          $loc = sprintf ("%s: %s [%s 0x%x]", $a, $loc, basename ($obj), $offset);
-         $syms{$a}{'object'} = $obj;
-         $syms{$a}{'loc'} = $loc;
+         $hsyms{$a}{'object'} = $obj;
+         $hsyms{$a}{'loc'} = $loc;
          debug ("resolved $a to $loc ('$obj')");
       }
       close (RP);
@@ -601,8 +601,8 @@ foreach my $obj (keys %objects) {
    else {
       for my $a ( keys %{ $objects{$obj} } ) {
          my $loc = sprintf ("%s: ??? [%s]", $a, basename ($obj));
-         $syms{$a}{'object'} = $obj;
-         $syms{$a}{'loc'} = $loc;
+         $hsyms{$a}{'object'} = $obj;
+         $hsyms{$a}{'loc'} = $loc;
          debug "$a => $loc ($obj not found)"
       }
    }
