@@ -671,7 +671,7 @@ foreach my $obj (keys %usage_by_objects) {
    my $sz = $usage_by_objects{$obj};
    printf ("%-40s %24u (%3d%%)\n", basename ($obj), $sz, ($sz * 100) / $total);
 }
-printf ("%-40s %24u (100%%)\n", "total", $total);
+printf ("%-40s %24u (100%%)\n", "TOTAL", $total);
 
 print "\n";
 print "Current heap utilization by threads:\n";
@@ -680,9 +680,9 @@ print "\n";
 
 foreach my $thr (keys %usage_by_threads) {
    my $sz = $usage_by_threads{$thr};
-   printf ("%-40s %24u (%3d%%)\n", $thr, $sz, ($sz * 100) / $total);
+   printf ("%-40s %24u (%3d%%)\n", "thread " . $thr, $sz, ($sz * 100) / $total);
 }
-printf ("%-40s %24u (100%%)\n", "total", $total);
+printf ("%-40s %24u (100%%)\n", "TOTAL", $total);
 
 if ($show_grouped) {
 
