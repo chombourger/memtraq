@@ -24,6 +24,7 @@ use File::Basename;
 use FileHandle;
 use Getopt::Long;
 use IPC::Open2;
+use POSIX;
 
 my %opts;
 
@@ -359,6 +360,14 @@ foreach my $line (<DMALLOC>)  {
          $chunks{$ptr}{'thread_id'} = $thread_id;
          $chunks{$ptr}{'timestamp'} = $ts;
 
+         if (!defined ($hotspots{$bt}{'size'})) {
+            $hotspots{$bt}{'allocs'} = 0;
+            $hotspots{$bt}{'frees'}  = 0;
+            $hotspots{$bt}{'size'}   = 0;
+         }
+         $hotspots{$bt}{'allocs'} = $hotspots{$bt}{'allocs'} + 1;
+         $hotspots{$bt}{'size'}   = $hotspots{$bt}{'size'} + $size;
+
          $total = $total + $size;
          $allocs ++;
       }
@@ -381,6 +390,10 @@ foreach my $line (<DMALLOC>)  {
          if (defined $chunks{$ptr}) {
             my $size = $chunks{$ptr}{'size'};
             $total = $total - $size;
+
+            my $bt = $chunks{$ptr}{'backtrace'};
+            $hotspots{$bt}{'frees'} = $hotspots{$bt}{'frees'} + 1;
+            $hotspots{$bt}{'size'}  = $hotspots{$bt}{'size'} - $size;
          }
          else {
             my $count = 1;
@@ -422,8 +435,9 @@ foreach my $line (<DMALLOC>)  {
 
       if ($log != 0) {
          if (defined $chunks{$oldptr}) {
-            my $size = $chunks{$oldptr}{'size'};
-            $total = $total - $size;
+            my $old_size = $chunks{$oldptr}{'size'};
+            $total = $total - $old_size;
+            $hotspots{$bt}{'size'} = $hotspots{$bt}{'size'} - $old_size + $size;
          }
 
          $chunks{$newptr}{'backtrace'} = $bt;
@@ -638,15 +652,6 @@ foreach my $ptr (keys %chunks) {
     }
 
     my $btstr = $chunks{$ptr}{'backtrace'};
-    my $count = 1;
-    my $size = 0;
-    if (defined ($hotspots{$btstr}{'count'})) {
-       $count = $hotspots{$btstr}{'count'} + 1;
-       $size  = $hotspots{$btstr}{'size'} + $chunks{$ptr}{'size'};
-    }
-    $hotspots{$btstr}{'count'} = $count;
-    $hotspots{$btstr}{'size'}  = $size;
-
     my @bt = split (/\;/, $btstr);
     if ($show_all) {
        foreach $a (@bt) {
@@ -686,8 +691,13 @@ if ($show_grouped) {
     print "---------------------------------------\n";
 
     foreach my $btstr (sort {$hotspots{$b}{'size'} <=> $hotspots{$a}{'size'} } keys %hotspots) {
+        next if ($hotspots{$btstr}{'size'} == 0);
+        my $allocs = $hotspots{$btstr}{'allocs'};
+        my $frees  = $hotspots{$btstr}{'frees'};
+        my $total  = $allocs + $frees;
+        my $ratio  = floor ($allocs * 100 / $total);
         print "\n";
-        print $hotspots{$btstr}{'count'} . " allocation(s) for a total of " . 
+        print $allocs . " allocation(s) ($ratio% alive) for a total of " . 
             $hotspots{$btstr}{'size'} . " bytes from:\n";
         my @bt = split (/\;/, $btstr);
         foreach my $a (@bt) {
