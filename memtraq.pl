@@ -553,6 +553,17 @@ foreach my $ptr (keys %chunks) {
    }
 }
 
+# Decode addresses from callstacks collected for unknown_frees
+foreach my $btstr (keys %unknown_frees) {
+   my @bt = split (/\;/, $btstr);
+   foreach $a (@bt) {
+      my $obj = object_from_addr ($a);
+      if ($obj ne "unknown") {
+         $objects{$obj}{$a} = "???";
+      }
+   }
+}
+
 # Second pass
 foreach my $obj (keys %objects) {
    my $file = $obj;
