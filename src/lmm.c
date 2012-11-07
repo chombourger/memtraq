@@ -28,6 +28,9 @@
 #include "internal.h"
 #include <stdio.h>
 
+/** Lock for serializing memory requests. */
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
 typedef struct {
    clist_t list;
    union {
@@ -84,6 +87,8 @@ lmm_alloc (size_t s) {
    clist_t* it;
 
    TRACE3 (("called with s=%u", s));
+
+   pthread_mutex_lock (&lock);
 
    s = ALIGN (s, sizeof (clist_t));
    it = CLIST_HEAD (&bss.list);
@@ -143,6 +148,7 @@ lmm_alloc (size_t s) {
       it = CLIST_NEXT (it);
    }
 
+   pthread_mutex_unlock (&lock);
    TRACE3 (("exiting with result=0"));
    return 0;
 }
@@ -153,12 +159,16 @@ lmm_free (void *p) {
 
    TRACE3 (("called with p=%p", p));
 
+   pthread_mutex_lock (&lock);
+
    it = (clist_t*) p;
    it --;
    it->marker = BAD_MARKER;
    CLIST_ADDTAIL (&bss.list, it, it->size);
 
    TRACE4 (("chunk size=%u, head=%p", it->size, it));
+   pthread_mutex_unlock (&lock);
+
    TRACE3 (("exiting"));
 }
 

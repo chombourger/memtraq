@@ -29,30 +29,31 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <netinet/in.h>
+
+#include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/types.h>
 
 typedef enum {
    false = 0,
    true = 1
 } bool;
 
-typedef void *(*malloc_func_t) (size_t s);
-static malloc_func_t old_malloc = 0;
-
-typedef void (*free_func_t) (void *p);
-static free_func_t old_free = 0;
-
-typedef void *(*realloc_func_t) (void *p, size_t s);
-static realloc_func_t old_realloc = 0;
+typedef enum {
+   INIT = 0,
+   MALLOC = 1,
+   FREE = 2,
+   REALLOC = 3,
+   TAG = 4
+} ev_t;
 
 /** Boolean for checking whether memtraq has initialized itself. */
 static bool initialized = false;
 
 /** Boolean for memory tracking enabled/disabled (defaults to true). */
-static bool enabled = true;
-
-/** Boolean for symbols to be resolved (defaults to true). */
-static bool resolve = true;
+static bool enabled = false;
 
 /** Boolean for backtrace to be emitted for free() (defaults to false). */
 static bool backtrace_free = false;
@@ -61,20 +62,68 @@ static bool backtrace_free = false;
 static unsigned int tag_serial = 0;
 
 /** Lock for serializing memory requests. */
-static pthread_mutex_t lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/** Level of recursion within the memtraq library. */
-static unsigned int nested_level = 0;
+/** TLS to detect recursion in malloc/free/realloc operations. */
+static pthread_key_t nested_level_key;
 
 /** File to log transactions to (set on initialization from the MEMTRAQ_LOG
   * environment variable). */
 static FILE *logf;
 
-static void
-log_event (const char *event) {
+static int sock = -1;
+static struct sockaddr_in sa;
+static struct sockaddr_in ra;
+
+extern void *__libc_malloc  (size_t);
+extern void  __libc_free    (void *);
+extern void *__libc_realloc (void *, size_t);
+
+#define DEFAULT_DST_PORT 6001
+#define DEFAULT_SRC_PORT 8000
+
+static char log_buffer [1024];
+
+static char *
+log_ptr (char *buffer, void *ptr) {
+
+   memcpy (buffer, &ptr, sizeof (ptr));
+   buffer += sizeof (ptr);
+   return buffer;
+}
+
+static char *
+log_u32 (char *buffer, unsigned int v) {
+
+   memcpy (buffer, &v, sizeof (v));
+   buffer += sizeof (v);
+   return buffer;
+}
+
+static char *
+log_u64 (char *buffer, unsigned long long v) {
+
+   memcpy (buffer, &v, sizeof (v));
+   buffer += sizeof (v);
+   return buffer;
+}
+
+static char *
+log_str (char *buffer, const char *str) {
+
+   size_t sz;
+
+   sz = strlen (str);
+   memcpy (buffer, str, sz);
+   buffer += sz;
+
+   return buffer;
+}
+
+static char *
+log_event (char *buffer, ev_t event) {
 
    struct timeval tv;
-   char name [20];
    pthread_t self;
    unsigned long long ts;
    int r;
@@ -83,28 +132,45 @@ log_event (const char *event) {
    gettimeofday (&tv, 0);
    ts = (tv.tv_sec * 1000000ULL) + (unsigned long long) tv.tv_usec;
 
-   /* Get thread name */
    self = pthread_self ();
-#ifdef HAVE_PTHREAD_GETNAME_NP
-   r = pthread_getname_np (self, name, sizeof (name));
-#else
-   r = -1;
-#endif
-   if (r != 0) strcpy (name, "unknown");
 
-   /* Log operation and backtrace */
-   fprintf (logf, "%llu;%s;%lu;%s;", ts, name, self, event);
+   buffer = log_u32 (buffer, event);
+   buffer = log_u64 (buffer, ts);
+   buffer = log_u32 (buffer, self);
+
+   return buffer;
 }
- 
+
+static void
+log_write (char *buffer) {
+
+   unsigned int sz;
+
+   sz = buffer - log_buffer;
+   log_u32 (log_buffer, sz);
+
+   if (logf != NULL) {
+      fwrite (log_buffer, sz, 1, logf);
+   }
+
+   if (sock >= 0) {
+      sendto (sock, log_buffer, sz, 0, (struct sockaddr *) &ra, sizeof (ra));
+   }
+}
+
 static bool
 do_init (void) {
    FILE *f;
    const char *fn;
-   const char *enabled_value;
-   const char *resolve_value;
    const char *backtrace_free_value;
-   bool result;
+   const char *tgt_value;
+   bool result = true;
 
+   /* Create TLS and set level to 1. */
+   (void) pthread_key_create (&nested_level_key, NULL);
+   pthread_setspecific (nested_level_key, (void *) 1);
+
+   /* Initialize tracing. */
    trace_init ();
 
    fn = getenv ("MEMTRAQ_LOG");
@@ -114,34 +180,34 @@ do_init (void) {
          logf = f;
       }
       else {
-         fprintf (stderr, "Failed to open '%s' for writing, memtraq will logf to stdout\n", fn);
-         logf = stdout;
-      }
-   }
-   else {
-      logf = stdout;
-   }
-
-   enabled_value = getenv ("MEMTRAQ_ENABLED");
-   if (enabled_value != 0) {
-      if (strcmp (enabled_value, "0") == 0) {
-         enabled = false;
-      }
-      else {
-         enabled = true;
+         fprintf (stderr, "Failed to open '%s' for writing!\n", fn);
       }
    }
 
-   resolve_value = getenv ("MEMTRAQ_RESOLVE");
-   if (resolve_value != 0) {
-      if (strcmp (resolve_value, "0") == 0) {
-         resolve = false;
+   /* Setup sender address. */
+   memset (&sa, 0, sizeof (struct sockaddr_in));
+   sa.sin_family = AF_INET;
+   sa.sin_addr.s_addr = htonl (INADDR_ANY);
+   sa.sin_port = htons (DEFAULT_SRC_PORT);
+
+   tgt_value = getenv ("MEMTRAQ_TARGET");
+   if (tgt_value != 0) {
+      sock = socket (PF_INET, SOCK_DGRAM, 0);
+      if (sock >= 0) {
+         int r = bind (sock, (struct sockaddr *) &sa, sizeof (struct sockaddr_in));
+         if (r < 0) {
+            close (sock);
+            sock = -1;
+         }
       }
-      else {
-         resolve = true;
-      }
+      /* Setup receiver address. */
+      memset (&ra, 0, sizeof(struct sockaddr_in));
+      ra.sin_family = AF_INET;
+      ra.sin_addr.s_addr = inet_addr (tgt_value);
+      ra.sin_port = htons (DEFAULT_DST_PORT);
    }
 
+   /* Check whether to backtrace() calls to free(). */
    backtrace_free_value = getenv ("MEMTRAQ_BACKTRACE_FREE");
    if (backtrace_free_value != 0) {
       if (strcmp (backtrace_free_value, "0") == 0) {
@@ -152,34 +218,39 @@ do_init (void) {
       }
    }
 
-   old_malloc = (malloc_func_t) dlsym (RTLD_NEXT, "__libc_malloc");
-   old_realloc = (realloc_func_t) dlsym (RTLD_NEXT, "__libc_realloc");
-   old_free = (free_func_t) dlsym (RTLD_NEXT, "__libc_free");
-
-   TRACE4 (("__libc_malloc=%p", old_malloc));
-   TRACE4 (("__libc_realloc=%p", old_realloc));
-   TRACE4 (("__libc_free=%p", old_free));
-   TRACE4 (("enabled=%d", enabled));
-   TRACE3 (("resolve=%d", resolve));
-
-   result = (old_malloc != 0) && (old_free != 0) && (old_realloc != 0);
    TRACE3 (("exiting with result=%d", result));
    return result;
 }
 
-static void
-do_backtrace (int skip);
-
 static bool
 check_initialized (void) {
+   const char *enabled_value;
    bool result;
 
    if (initialized == false) {
       initialized = do_init ();
       if (initialized == true) {
-         fprintf (logf, "timestamp;thread-name;thread-id;event;param1;param2;param3;result;callstack\n");
-         log_event ("start");
-         fprintf (logf, VERSION ";%d;%d\n", enabled, resolve);
+         char *buffer;
+
+         pthread_mutex_lock (&log_lock);
+
+         /* memtraq is initialized, check whether to enable logging. */
+         enabled_value = getenv ("MEMTRAQ_ENABLED");
+         if (enabled_value != 0) {
+            if (strcmp (enabled_value, "0") != 0) {
+               enabled = true;
+            }
+         }
+         else {
+            enabled = true;
+         }
+
+         buffer = log_buffer + 4;
+         buffer = log_event (buffer, INIT);
+         buffer = log_u32 (buffer, enabled);
+         log_write (buffer);
+
+         pthread_mutex_unlock (&log_lock);
       }
    }
    result = initialized;
@@ -187,56 +258,62 @@ check_initialized (void) {
    return result;
 }
 
+/**
+  * Make the calling thread enter a memory operation. Increment the
+  * nested level so that memtraq does not record inner operations.
+  *
+  * @return the current nesting level for the calling thread.
+  *
+  */
+static unsigned int
+enter (void) {
+
+   unsigned int level;
+
+   if (initialized == true) {
+      level = (unsigned int) pthread_getspecific (nested_level_key);
+      level ++;
+      pthread_setspecific (nested_level_key, (void *) level);
+   }
+   else {
+      level = 2;
+   }
+
+   return level;
+}
+
+/**
+  * Make the calling thread leave a memory operation. Decrement the
+  * nested level so that memtraq knows when the calling thread is
+  * no longer within a memory transaction.
+  *
+  */
 static void
-do_backtrace (int skip) {
+leave (void) {
 
-   void *buffer[MAX_BT];
-   int   i,n;
-   bool  resolved = false;
+   unsigned int level;
 
-   TRACE3 (("called with skip=%d", skip));
-
-   n = backtrace (buffer, MAX_BT);
-
-#ifdef DECODE_ADDRESSES
-   if (resolve == true) {
-      char **strings;
-
-      TRACE4 (("calling backtrace_symbols()"));
-      strings = backtrace_symbols (buffer, n);
-      if (strings != 0) {
-         for (i = skip; i < n; i++) {
-            fprintf (logf, ";%s", strings [i]);
-         }
-         free (strings);
-         resolved = true;
-      }
-      else {
-        TRACE4 (("backtrace_symbols() failed!"));
-      }
+   if (initialized == true) {
+      level = (unsigned int) pthread_getspecific (nested_level_key);
+      assert (level > 0);
+      level --;
+      pthread_setspecific (nested_level_key, (void *) level);
    }
-#endif /* DECODE_ADDRESSES */
-
-   if (resolved == false) {
-      for (i = skip; i < n; i++) {
-         fprintf (logf, ";%p", buffer [i]);
-      }
-   }
-
-   TRACE3 (("exit"));
 }
 
 void *
 do_malloc (size_t s, int skip) {
 
+   unsigned int nested_level;
    void* result;
 
    TRACE3 (("called with s=%u, skip=%d", s, skip));
 
-   pthread_mutex_lock (&lock);
-   nested_level ++;
-   TRACE4 (("nested level = %u", nested_level));
-
+   /* Get nesting level, if a memory allocation is already in
+    * progress, get the requested memory from the internal
+    * pool. This is required as some operations such as backtrace()
+    * use malloc() themselves. */
+   nested_level = enter ();
    if (nested_level > 1) {
       result = lmm_alloc (s);
    }
@@ -244,26 +321,38 @@ do_malloc (size_t s, int skip) {
 
       if (check_initialized ()) {
 
-         assert (old_malloc != 0);
-         result = old_malloc (s);
+         result = __libc_malloc (s);
 
+         /* Check if logging is enabled. */
+         pthread_mutex_lock (&log_lock);
          if (enabled) {
+            int   i,n;
+            char *buffer;
+            void *bt [MAX_BT];
+
+            /* Get backtrace */
+            pthread_mutex_unlock (&log_lock);
+            n = backtrace (bt, MAX_BT);
+            pthread_mutex_lock (&log_lock);
 
             /* Log operation and backtrace. */
-            log_event ("malloc");
-            fprintf (logf, "%u;void;%p", s, result);
-            do_backtrace (skip + 2);
-            fprintf (logf, "\n");
+            buffer = log_buffer + 4;
+            buffer = log_event (buffer, MALLOC);
+            buffer = log_u32 (buffer, s);
+            buffer = log_ptr (buffer, result);
+            for (i = (skip + 1); i < n; i++) {
+               buffer = log_ptr (buffer, bt [i]);
+            }
+            log_write (buffer);
          }
+         pthread_mutex_unlock (&log_lock);
       }
       else {
          result = 0;
       }
    }
 
-   nested_level --;
-   pthread_mutex_unlock (&lock);
-
+   leave ();
    TRACE3 (("exiting with result=%p", result));
    return result;
 }
@@ -271,47 +360,62 @@ do_malloc (size_t s, int skip) {
 void
 do_free (void *p, int skip) {
 
+   unsigned int nested_level;
+
+   /* Do not bother doing anything if called with a null pointer! */
    if (p == 0) {
       return;
    }
 
    TRACE3 (("called with p=%p, skip=%d", p, skip));
 
-   pthread_mutex_lock (&lock);
-   nested_level ++;
-   TRACE4 (("nested level = %u", nested_level));
-
+   nested_level = enter ();
    if (lmm_valid (p)) {
       lmm_free (p);
    }
    else {
       if (check_initialized ()) {
 
-         assert (old_free != 0);
-         old_free (p);
+         __libc_free (p);
 
+         pthread_mutex_lock (&log_lock);
          if (enabled) {
+            int   i,n;
+            char *buffer;
+            void *bt [MAX_BT];
+
+            /* Get backtrace */
+            if (backtrace_free == true) {
+               pthread_mutex_unlock (&log_lock);
+               n = backtrace (bt, MAX_BT);
+               pthread_mutex_lock (&log_lock);
+            }
 
             /* Log operation and backtrace. */
-            log_event ("free");
-            fprintf (logf, "%p;void;void", p);
-            if (backtrace_free) {
-               do_backtrace (skip + 2);
+            buffer = log_buffer + 4;
+            buffer = log_event (buffer, FREE);
+            buffer = log_ptr (buffer, p);
+
+            if (backtrace_free == true) {
+               for (i = (skip + 1); i < n; i++) {
+                  buffer = log_ptr (buffer, bt [i]);
+               }
             }
-            fprintf (logf, "\n");
+
+            log_write (buffer);
          }
+         pthread_mutex_unlock (&log_lock);
       }
    }
 
-   nested_level --;
-   pthread_mutex_unlock (&lock);
-
+   leave ();
    TRACE3 (("exit"));
 }
 
 void *
 do_realloc (void *p, size_t s, int skip) {
 
+   unsigned int nested_level;
    void *result;
 
    if (lmm_valid (p)) {
@@ -321,70 +425,84 @@ do_realloc (void *p, size_t s, int skip) {
 
    TRACE3 (("called with p=%p, s=%u, skip=%d", p, s, skip));
 
-   pthread_mutex_lock (&lock);
-   nested_level ++;
-   TRACE4 (("nested level = %u", nested_level));
+   nested_level = enter ();
+   if (check_initialized () == true) {
 
-   if (check_initialized () == false) {
-      pthread_mutex_unlock (&lock);
-      return 0;
+      result = __libc_realloc (p, s);
+
+      pthread_mutex_lock (&log_lock);
+      if (enabled) {
+         int   i,n;
+         char *buffer;
+         void *bt [MAX_BT];
+
+         /* Get backtrace */
+         pthread_mutex_unlock (&log_lock);
+         n = backtrace (bt, MAX_BT);
+         pthread_mutex_lock (&log_lock);
+
+         /* Log operation and backtrace. */
+         buffer = log_buffer + 4;
+         buffer = log_event (buffer, REALLOC);
+         buffer = log_ptr (buffer, p);
+         buffer = log_u32 (buffer, s);
+         buffer = log_ptr (buffer, result);
+         for (i = (skip + 1); i < n; i++) {
+            buffer = log_ptr (buffer, bt [i]);
+         }
+         log_write (buffer);
+      }
+      pthread_mutex_unlock (&log_lock);
+   }
+   else {
+      result = 0;
    }
 
-   assert (old_realloc != 0);
-   result = old_realloc (p, s);
-
-   if (enabled) {
-
-      /* Log event and backtrace. */
-      log_event ("realloc");
-      fprintf (logf, "%p;%u;%p", p, s, result);
-      do_backtrace (skip + 2);
-      fprintf (logf, "\n");
-   }
-
-   nested_level --;
-   pthread_mutex_unlock (&lock);
-
+   leave ();
    TRACE3 (("exiting with result=%p", result));
    return result;
 }
 
 void
 memtraq_enable (void) {
-   pthread_mutex_lock (&lock);
+   pthread_mutex_lock (&log_lock);
    enabled = true;
-   pthread_mutex_unlock (&lock);
+   pthread_mutex_unlock (&log_lock);
 }
 
 void
 memtraq_disable (void) {
-   pthread_mutex_lock (&lock);
+   pthread_mutex_lock (&log_lock);
    enabled = false;
-   fflush (logf);
-   pthread_mutex_unlock (&lock);
+   if (logf != 0) {
+      fflush (logf);
+   }
+   pthread_mutex_unlock (&log_lock);
 }
 
 void
-memtraq_tag (const char* name) {
+memtraq_tag (const char *name) {
 
-   pthread_mutex_lock (&lock);
-   nested_level ++;
+   char *buffer;
+   unsigned int nested_level;
 
+   nested_level = enter ();
    if (check_initialized ()) {
 
+      pthread_mutex_lock (&log_lock);
       if (enabled) {
          tag_serial ++;
 
-         /* Log operation and backtrace. */
-         log_event ("tag");
-         fprintf (logf, "%s;%u;void", name, tag_serial);
-         do_backtrace (2);
-         fprintf (logf, "\n");
+         /* Insert tag into log. */
+         buffer = log_buffer + 4;
+         buffer = log_event (buffer, TAG);
+         buffer = log_str (buffer, name);
+         buffer = log_u32 (buffer, tag_serial);
+         log_write (buffer);
       }
+      pthread_mutex_unlock (&log_lock);
    }
 
-   nested_level --;
-   pthread_mutex_unlock (&lock);
+   leave ();
 }
-
 

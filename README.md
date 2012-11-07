@@ -59,18 +59,17 @@ explicitly calls MEMTRAQ\_ENABLE().
 
 2) MEMTRAQ\_LOG
 
-Can be set to redirect the memtraq output to a file. By default, the memtraq
-output otherwise goes to stdout!
+Can be set to redirect the memtraq output to a file.
 
-3) MEMTRAQ\_RESOLVE
-
-If set to 0, memtraq will not try to resolve addresses to symbol names. This
-is recommended for slow devices as backtrace\_symbols() is costly operation.
-
-4) MEMTRAQ\_BACKTRACE\_FREE
+3) MEMTRAQ\_BACKTRACE\_FREE
 
 If set to non-zero, memtraq will emit the backtrace for the calls to free()
 or alike.
+
+4) MEMTRAQ\_TARGET
+
+Set to an IP address for logging memory transaction over UDP. Stream should
+be captured with udp-logger.pl and later processes with memtraq.pl.
 
 Processing memtraq log files
 ----------------------------
@@ -118,9 +117,6 @@ where:
 
 So now that we know that our application leaks, we may want to know where
 allocations were made!
-
-The above log was created by memtraq having MEMTRAQ\_RESOLVE set to 0 hence
-no calls to backtrace\_symbols() were made to decode the addresses.
 
 To decode the addresses offline we need:
 
@@ -170,6 +166,6 @@ and where \<level\> is one of:
 
 Note: debug traces are sent to stderr. It should also be noted that the trace system
 may result in a different scheduling if enabled in a multi-threaded application as
-a lock is used to protect the buffer used to store traces in their expanded form (i.e.,
-with arguments evaluated).
+a lock is used to protect the log buffer used for streaming traces either to the
+selected file or target.
 

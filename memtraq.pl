@@ -26,6 +26,12 @@ use Getopt::Long;
 use IPC::Open2;
 use POSIX;
 
+my $EV_START   = 0;
+my $EV_MALLOC  = 1;
+my $EV_FREE    = 2;
+my $EV_REALLOC = 3;
+my $EV_TAG     = 4;
+
 my %opts;
 
 # Current timestamp
@@ -80,7 +86,7 @@ sub debug {
 }
 
 my $file=$ARGV[0];
-open (DMALLOC, $file) or die("Could not open " . $file . "!");
+open (DMALLOC, '<', $file) or die("Could not open " . $file . "!");
 
 my %maps;
 my %hsyms;
@@ -122,7 +128,7 @@ sub object_from_addr {
    my $a = $_[0];
    my $result = "unknown";
 
-   if ($a =~ /^0x[0-9a-f]+$/) {
+   if ($a =~ /^[0-9a-f]+$/) {
       $a = hex ($a);
       foreach my $m (keys %maps) {
          my $start = $maps{$m}{'start'};
@@ -140,7 +146,7 @@ sub offset_from_addr {
    my $a = $_[0];
    my $result = 0;
 
-   if ($a =~ /^0x[0-9a-f]+$/) {
+   if ($a =~ /^[0-9a-f]+$/) {
       $a = hex ($a);
       foreach my $m (keys %maps) {
          my $start = $maps{$m}{'start'};
@@ -162,7 +168,7 @@ sub decode {
    $result{'object'} = "unknown";
    $result{'loc'}    = $a;
 
-   if ($a =~ /^0x[0-9a-f]+$/) {
+   if ($a =~ /^[0-9a-f]+$/) {
       if (defined ($hsyms{$a})) {
          $result{'object'} = $hsyms{$a}{'object'};
          $result{'loc'} = $hsyms{$a}{'loc'};
@@ -250,52 +256,32 @@ if ($after ne '') {
    $log = 0;
 }
 
-foreach my $line (<DMALLOC>)  {
-   $line =~ s/\n//;
+binmode (DMALLOC);
+while (read (DMALLOC, my $data, 20)) {
 
-   my $thread_name = "";
-   my $thread_id = "";
+   my ($sz, $ev, $ts, $thread_id) = unpack 'IIQI', $data;
+   $sz = $sz - 4 - 4 - 8 - 4;
 
-   # <ts>;<thread-name>
-   if ($line =~ /^\d+\;/) {
-
-      $lines = $lines + 1; 
-
-      $ts = $line;
-      $ts =~ s/\;.*//g;
-      $line =~ s/^\d+\;//;
-
-      # Extract thread-name
-      $thread_name = $line;
-      $thread_name =~ s/\;.*//;
-      $line =~ s/[^;]+\;//;
-
-      # Extract thread-id
-      $thread_id = $line;
-      $thread_id =~ s/\;.*//;
-      $line =~ s/\d++\;//;
-
-      # Initialize ts_min if this is the first log entry
-      if ($lines eq 1) {
-         $ts_min = $ts;
-      }
-
-      # As memtraq logs are ordered chronogically, ts_max is the current ts
-      $ts_max = $ts;
+   # Initialize ts_min if this is the first log entry
+   $lines = $lines + 1;
+   if ($lines eq 1) {
+      $ts_min = $ts;
    }
 
-   # tag;<name>;<serial>;void;<backtrace>
-   if ($line =~ /^tag\;/) {
+   # As memtraq logs are ordered chronogically, ts_max is the current ts
+   $ts_max = $ts;
+
+   # START event
+   if ($ev == $EV_START) {
+      read (DMALLOC, $data, 4);
+   }
+
+   # TAG event
+   if ($ev == $EV_TAG) {
 
       # Extract tag name
-      my $name = $line;
-      $name =~ s/^tag\;//g;
-      $name =~ s/\;.*//;
-
-      # Extract tag serial
-      my $serial = $line;
-      $serial =~ s/^tag\;[^;]+\;//;
-      $serial =~ s/\;.*//;
+      read (DMALLOC, $data, $sz);
+      my ($name, $serial) = unpack 'ZI', $sz;
 
       if ($before ne '') {
          if ($before =~ /:\d+$/) {
@@ -335,28 +321,25 @@ foreach my $line (<DMALLOC>)  {
       }
    }
 
-   # malloc;<size>;void;<result>;<backtrace>
-   if ($line =~ /^malloc\;/) {
+   # MALLOC event
+   if ($ev == $EV_MALLOC) {
 
-      # Extract backtrace
-      my $bt = $line;
-      $bt =~ s/^malloc\;\d+\;void\;0x[0-9a-f]+\;//;
-      $bt =~ s/'.*//g;
+      read (DMALLOC, $data, 8);
+      my ($size, $ptr) = unpack 'II', $data;
+      $sz = $sz - 4 - 4;
 
-      # Extract allocated pointer
-      my $ptr = $line;
-      $ptr =~ s/^malloc\;\d+\;void\;//;
-      $ptr =~ s/\;.*//;
-
-      # Extract buffer size
-      my $size = $line;
-      $size =~ s/^malloc\;//;
-      $size =~ s/\;.*//;
+      my $bt = "";
+      while ($sz > 0) {
+         read (DMALLOC, $data, 4);
+         my ($ra) = unpack 'I', $data;
+         $sz = $sz - 4;
+         $bt = $bt . sprintf ("%x;", $ra);
+      }
+      $bt =~ s/;$//;
 
       if ($log != 0) {
          $chunks{$ptr}{'backtrace'} = $bt;
          $chunks{$ptr}{'size'} = $size;
-         $chunks{$ptr}{'thread_name'} = $thread_name;
          $chunks{$ptr}{'thread_id'} = $thread_id;
          $chunks{$ptr}{'timestamp'} = $ts;
 
@@ -372,19 +355,22 @@ foreach my $line (<DMALLOC>)  {
          $allocs ++;
       }
    }
-   # free;<ptr>;void;void;<backtrace>
-   if ($line =~ /^free\;/) {
 
-      # Extract pointer
-      my $ptr = $line;
-      $ptr =~ s/^free\;//;
-      $ptr =~ s/\;.*//;
+   # FREE event
+   if ($ev == $EV_FREE) {
 
-      # Extract backtrace
-      my $bt = $line;
-      $bt =~ s/\(nil\)/0x0/g;
-      $bt =~ s/^free\;0x[0-9a-f]+\;void\;void\;//;
-      $bt =~ s/'.*//g;
+      read (DMALLOC, $data, 4);
+      my ($ptr) = unpack 'I', $data;
+      $sz = $sz - 4;
+
+      my $bt = "";
+      while ($sz > 0) {
+         read (DMALLOC, $data, 4);
+         my ($ra) = unpack 'I', $data;
+         $sz = $sz - 4;
+         $bt = $bt . sprintf ("%x;", $ra);
+      }
+      $bt =~ s/;$//;
 
       if ($log != 0) {
          if (defined $chunks{$ptr}) {
@@ -407,31 +393,23 @@ foreach my $line (<DMALLOC>)  {
          delete $chunks{$ptr};
       }
    }
-   # realloc;<oldptr>;<size>;<result>;<backtrace>
-   if ($line =~ /^realloc\;/) {
 
-      # Extract backtrace
-      my $bt = $line;
-      $bt =~ s/\(nil\)/0x0/g;
-      $bt =~ s/^realloc\;0x[0-9a-f]+\;\d+\;0x[0-9a-f]+\;//;
-      $bt =~ s/'.*//g;
+   # REALLOC event
+   if ($ev == $EV_REALLOC) {
 
-      # Extract old pointer
-      my $oldptr = $line;
-      $oldptr =~ s/^realloc\;//;
-      $oldptr =~ s/\;.*//;
+      read (DMALLOC, $data, 12);
+      my ($size, $oldptr, $newptr) = unpack 'III', $data;
+      $sz = $sz - 4 - 4 - 4;
 
-      # Extract new size
-      my $size = $line;
-      $size =~ s/\(nil\)/0x0/g;
-      $size =~ s/^realloc\;0x[0-9a-f]+\;//;
-      $size =~ s/\;.*//;
-
-      # Extract new ptr
-      my $newptr = $line;
-      $newptr =~ s/\(nil\)/0x0/g;
-      $newptr =~ s/^realloc\;0x[0-9a-f]+\;\d+\;//;
-      $newptr =~ s/\;.*//;
+      my $bt = "";
+      $/ = \4;
+      while ($sz > 0) {
+         read (DMALLOC, $data, 4);
+         my ($ra) = unpack 'I', $data;
+         $sz = $sz - 4;
+         $bt = $bt . sprintf ("%x;", $ra);
+      }
+      $bt =~ s/;$//;
 
       if ($log != 0) {
          if (defined $chunks{$oldptr}) {
@@ -442,7 +420,6 @@ foreach my $line (<DMALLOC>)  {
 
          $chunks{$newptr}{'backtrace'} = $bt;
          $chunks{$newptr}{'size'} = $size;
-         $chunks{$newptr}{'thread_name'} = $thread_name;
          $chunks{$newptr}{'thread_id'} = $thread_id;
          $chunks{$newptr}{'timestamp'} = $ts;
 
@@ -468,7 +445,7 @@ print "\n";
 print $total . " bytes (" . keys(%chunks) . " blocks) in use\n";
 print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
 if (scalar (keys %unknown_frees) > 0) {
-   print "Note: " . scalar(%unknown_frees) . " frees for unknown blocks!\n";
+   print "Note: " . scalar(keys %unknown_frees) . " frees for unknown blocks!\n";
 }
 print "\n";
 
@@ -549,7 +526,6 @@ print "\n";
 # basis.
 foreach my $ptr (keys %chunks) {
    my $btstr = $chunks{$ptr}{'backtrace'};
-   my $thread_name = $chunks{$ptr}{'thread_name'};
    my $thread_id = $chunks{$ptr}{'thread_id'};
    my @bt = split (/\;/, $btstr);
    if (defined $bt[1]) {
@@ -601,12 +577,12 @@ foreach my $obj (keys %objects) {
          if ($type =~ / executable,/) {
             $offset = hex($a);
          }
-         my $in = sprintf ("0x%x", $offset);
+         my $in = sprintf ("%x", $offset);
          debug "writing $in to pipe ($a)";
          print WP $in . "\n";
          my $loc = <RP>;
          $loc =~ s/\n//;
-         $loc = sprintf ("%s: %s [%s 0x%x]", $a, $loc, basename ($obj), $offset);
+         $loc = sprintf ("%s: %s [%s %x]", $a, $loc, basename ($obj), $offset);
          $hsyms{$a}{'object'} = $obj;
          $hsyms{$a}{'loc'} = $loc;
          debug ("resolved $a to $loc ('$obj')");
@@ -636,7 +612,6 @@ if ($show_all) {
 
 my $idx = 1;
 foreach my $ptr (keys %chunks) {
-    my $thread_name = $chunks{$ptr}{'thread_name'};
     my $thread_id = $chunks{$ptr}{'thread_id'};
 
     if(!defined($chunks{$ptr}{'size'})) {
@@ -647,7 +622,7 @@ foreach my $ptr (keys %chunks) {
         print "\nblock #" . $idx . ": block of " . $chunks{$ptr}{'size'} . " bytes not freed\n";
         print "\taddress  : " . $ptr . "\n";
         print "\ttimestamp: " . $chunks{$ptr}{'timestamp'} . "\n";
-        print "\tthread   : " . $thread_name . " (" . $thread_id . ")\n";
+        print "\tthread   : " . $thread_id . "\n";
         print "\tcallstack:\n";
     }
 
@@ -711,7 +686,7 @@ if ($show_grouped) {
 # Dump unknown frees
 #----------------------------------------------------------------------------
 
-if (($show_unknown) && (scalar (%unknown_frees) > 0)) {
+if (($show_unknown) && (scalar (keys %unknown_frees) > 0)) {
 
     print "\n";
     print "Free operations without a matching allocation:\n";
@@ -780,7 +755,7 @@ if ($graph ne '') {
          next;
       }
       my $label = $nodes{$n}{'loc'};
-      $label =~ s/^0x[0-9a-f]+: //;
+      $label =~ s/^[0-9a-f]+: //;
       $label =~ s/ at /\\n/;
       print GRAPH "   F$n [shape=box,label=\"" . $label . "\"];\n";
    }
