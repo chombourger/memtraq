@@ -75,6 +75,8 @@ static int sock = -1;
 static struct sockaddr_in sa;
 static struct sockaddr_in ra;
 
+#define LOG_HEADER_SIZE 12
+
 extern void *__libc_malloc  (size_t);
 extern void  __libc_free    (void *);
 extern void *__libc_realloc (void *, size_t);
@@ -144,10 +146,12 @@ log_event (char *buffer, ev_t event) {
 static void
 log_write (char *buffer) {
 
+   static unsigned long long serial = 0;
    unsigned int sz;
 
    sz = buffer - log_buffer;
    log_u32 (log_buffer, sz);
+   log_u64 (log_buffer + 4, ++serial);
 
    if (logf != NULL) {
       fwrite (log_buffer, sz, 1, logf);
@@ -219,6 +223,7 @@ do_init (void) {
    }
 
    TRACE3 (("exiting with result=%d", result));
+   pthread_setspecific (nested_level_key, (void *) 0);
    return result;
 }
 
@@ -245,7 +250,7 @@ check_initialized (void) {
             enabled = true;
          }
 
-         buffer = log_buffer + 4;
+         buffer = log_buffer + LOG_HEADER_SIZE;
          buffer = log_event (buffer, INIT);
          buffer = log_u32 (buffer, enabled);
          log_write (buffer);
@@ -270,7 +275,7 @@ enter (void) {
 
    unsigned int level;
 
-   if (initialized == true) {
+   if (check_initialized() == true) {
       level = (unsigned int) pthread_getspecific (nested_level_key);
       level ++;
       pthread_setspecific (nested_level_key, (void *) level);
@@ -336,7 +341,7 @@ do_malloc (size_t s, int skip) {
             pthread_mutex_lock (&log_lock);
 
             /* Log operation and backtrace. */
-            buffer = log_buffer + 4;
+            buffer = log_buffer + LOG_HEADER_SIZE;
             buffer = log_event (buffer, MALLOC);
             buffer = log_u32 (buffer, s);
             buffer = log_ptr (buffer, result);
@@ -392,7 +397,7 @@ do_free (void *p, int skip) {
             }
 
             /* Log operation and backtrace. */
-            buffer = log_buffer + 4;
+            buffer = log_buffer + LOG_HEADER_SIZE;
             buffer = log_event (buffer, FREE);
             buffer = log_ptr (buffer, p);
 
@@ -419,8 +424,8 @@ do_realloc (void *p, size_t s, int skip) {
    void *result;
 
    if (lmm_valid (p)) {
-      fprintf (logf, "realloc(%p,%u) not supported by internal alloctor!\n", p, s);
-      return 0;
+      result = lmm_realloc (p, s);
+      return result;
    }
 
    TRACE3 (("called with p=%p, s=%u, skip=%d", p, s, skip));
@@ -442,7 +447,7 @@ do_realloc (void *p, size_t s, int skip) {
          pthread_mutex_lock (&log_lock);
 
          /* Log operation and backtrace. */
-         buffer = log_buffer + 4;
+         buffer = log_buffer + LOG_HEADER_SIZE;
          buffer = log_event (buffer, REALLOC);
          buffer = log_ptr (buffer, p);
          buffer = log_u32 (buffer, s);
@@ -494,7 +499,7 @@ memtraq_tag (const char *name) {
          tag_serial ++;
 
          /* Insert tag into log. */
-         buffer = log_buffer + 4;
+         buffer = log_buffer + LOG_HEADER_SIZE;
          buffer = log_event (buffer, TAG);
          buffer = log_str (buffer, name);
          buffer = log_u32 (buffer, tag_serial);

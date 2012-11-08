@@ -20,6 +20,7 @@
 use strict;
 use warnings;
 
+use Cwd 'abs_path';
 use File::Basename;
 use FileHandle;
 use Getopt::Long;
@@ -63,6 +64,7 @@ my $show_all = 0;
 my $show_grouped = 0;
 my $show_unknown = 0;
 my $do_debug = 0;
+my $live_report = '';
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
@@ -70,6 +72,7 @@ GetOptions(\%opts,
    'after|a=s' => \$after,
    'debug|d' => \$do_debug,
    'graph|g=s' => \$graph,
+   'live-report=s' => \$live_report,
    'map|m=s' => \$map,
    'node-fraction|n=f' => \$node_fraction,
    'paths|p=s' => \$paths,
@@ -167,11 +170,19 @@ sub decode {
    # Default values
    $result{'object'} = "unknown";
    $result{'loc'}    = $a;
+   $result{'dir'}    = '';
+   $result{'file'}   = '';
+   $result{'line'}   = '';
+   $result{'method'} = '';
 
    if ($a =~ /^[0-9a-f]+$/) {
       if (defined ($hsyms{$a})) {
          $result{'object'} = $hsyms{$a}{'object'};
-         $result{'loc'} = $hsyms{$a}{'loc'};
+         $result{'loc'}    = $hsyms{$a}{'loc'};
+         $result{'dir'}    = $hsyms{$a}{'dir'};
+         $result{'file'}   = $hsyms{$a}{'file'};
+         $result{'line'}   = $hsyms{$a}{'line'};
+         $result{'method'} = $hsyms{$a}{'method'};
       }
    }
    return %result;
@@ -248,6 +259,8 @@ my $reallocs = 0;
 my $log = 1;
 my %hotspots;
 my $lines = 0;
+my $current_serial = 0;
+my $logs_lost = 0;
 
 my @heap_history;
 
@@ -257,15 +270,28 @@ if ($after ne '') {
 }
 
 binmode (DMALLOC);
-while (read (DMALLOC, my $data, 20)) {
+while (read (DMALLOC, my $data, 28)) {
 
-   my ($sz, $ev, $ts, $thread_id) = unpack 'IIQI', $data;
-   $sz = $sz - 4 - 4 - 8 - 4;
+   my ($sz, $serial, $ev, $ts, $thread_id) = unpack 'IQIQI', $data;
+   $sz = $sz - 4 - 8 - 4 - 8 - 4;
+
+   debug "LOG HEADER sz=$sz, serial=$serial, ev=$ev, ts=$ts, thread_id=$thread_id";
 
    # Initialize ts_min if this is the first log entry
    $lines = $lines + 1;
    if ($lines eq 1) {
       $ts_min = $ts;
+   }
+
+   if ($current_serial != 0) {
+      $current_serial = $current_serial + 1;
+      if ($serial > $current_serial) {
+         debug "received log #$serial, $current_serial expected!\n";
+         $logs_lost = $logs_lost + 1;
+      }
+   }
+   else {
+      $current_serial = $serial;
    }
 
    # As memtraq logs are ordered chronogically, ts_max is the current ts
@@ -282,6 +308,8 @@ while (read (DMALLOC, my $data, 20)) {
       # Extract tag name
       read (DMALLOC, $data, $sz);
       my ($name, $serial) = unpack 'ZI', $sz;
+
+      debug "LOG TAG name=$name, serial=$serial";
 
       if ($before ne '') {
          if ($before =~ /:\d+$/) {
@@ -328,6 +356,8 @@ while (read (DMALLOC, my $data, 20)) {
       my ($size, $ptr) = unpack 'II', $data;
       $sz = $sz - 4 - 4;
 
+      debug "LOG MALLOC size=$size, ptr=$ptr";
+
       my $bt = "";
       while ($sz > 0) {
          read (DMALLOC, $data, 4);
@@ -362,6 +392,8 @@ while (read (DMALLOC, my $data, 20)) {
       read (DMALLOC, $data, 4);
       my ($ptr) = unpack 'I', $data;
       $sz = $sz - 4;
+
+      debug "LOG FREE ptr=$ptr";
 
       my $bt = "";
       while ($sz > 0) {
@@ -398,11 +430,12 @@ while (read (DMALLOC, my $data, 20)) {
    if ($ev == $EV_REALLOC) {
 
       read (DMALLOC, $data, 12);
-      my ($size, $oldptr, $newptr) = unpack 'III', $data;
+      my ($oldptr, $size, $newptr) = unpack 'III', $data;
       $sz = $sz - 4 - 4 - 4;
 
+      debug "LOG REALLOC oldptr=$oldptr, $size=$size, newptr=$newptr";
+
       my $bt = "";
-      $/ = \4;
       while ($sz > 0) {
          read (DMALLOC, $data, 4);
          my ($ra) = unpack 'I', $data;
@@ -414,14 +447,24 @@ while (read (DMALLOC, my $data, 20)) {
       if ($log != 0) {
          if (defined $chunks{$oldptr}) {
             my $old_size = $chunks{$oldptr}{'size'};
+            my $old_bt   = $chunks{$oldptr}{'backtrace'};
             $total = $total - $old_size;
-            $hotspots{$bt}{'size'} = $hotspots{$bt}{'size'} - $old_size + $size;
+            $hotspots{$old_bt}{'size'} = $hotspots{$old_bt}{'size'} - $old_size;
+            $hotspots{$old_bt}{'frees'} = $hotspots{$old_bt}{'frees'} + 1;
          }
 
          $chunks{$newptr}{'backtrace'} = $bt;
          $chunks{$newptr}{'size'} = $size;
          $chunks{$newptr}{'thread_id'} = $thread_id;
          $chunks{$newptr}{'timestamp'} = $ts;
+
+         if (!defined ($hotspots{$bt}{'size'})) {
+            $hotspots{$bt}{'allocs'} = 0;
+            $hotspots{$bt}{'frees'}  = 0;
+            $hotspots{$bt}{'size'}   = 0;
+         }
+         $hotspots{$bt}{'allocs'} = $hotspots{$bt}{'allocs'} + 1;
+         $hotspots{$bt}{'size'}   = $hotspots{$bt}{'size'} + $size;
 
          $total = $total + $size;
          $reallocs ++;
@@ -447,6 +490,7 @@ print $allocs . " allocs, " . $frees . " frees, " . $reallocs . " reallocs\n";
 if (scalar (keys %unknown_frees) > 0) {
    print "Note: " . scalar(keys %unknown_frees) . " frees for unknown blocks!\n";
 }
+print "$logs_lost log entries lost!\n";
 print "\n";
 
 my $time_total = $ts_max - $ts_min;
@@ -593,19 +637,45 @@ foreach my $obj (keys %objects) {
          print WP $in . "\n";
          my $loc = <RP>;
          $loc =~ s/\n//;
+
+         my $dir  = '';
+         my $file = '';
+         my $line = '';
+         my $method = '';
+
+         if ($loc =~ /^([A-Za-z0-9_:, ()<>&*]+) at (\/[\/A-Za-z0-9_.-]+):(\d+)/) {
+            $method = $1;
+            $file   = $2;
+            $line   = $3;
+            $dir    = dirname ($file);
+            $dir    = abs_path ($dir) if (defined abs_path ($dir));
+            $file   = basename ($file);
+         }
+
          $loc = sprintf ("%s: %s [%s %x]", $a, $loc, basename ($obj), $offset);
+
          $hsyms{$a}{'object'} = $obj;
-         $hsyms{$a}{'loc'} = $loc;
+         $hsyms{$a}{'loc'}    = $loc;
+         $hsyms{$a}{'dir'}    = $dir;
+         $hsyms{$a}{'file'}   = $file;
+         $hsyms{$a}{'line'}   = $line;
+         $hsyms{$a}{'method'} = $method;
+
          debug ("resolved $a to $loc ('$obj')");
       }
       close (RP);
       close (WP);
    }
    else {
+      print "$file: file not found!\n";
       for my $a ( keys %{ $objects{$obj} } ) {
          my $loc = sprintf ("%s: ??? [%s]", $a, basename ($obj));
          $hsyms{$a}{'object'} = $obj;
-         $hsyms{$a}{'loc'} = $loc;
+         $hsyms{$a}{'loc'}    = $loc;
+         $hsyms{$a}{'dir'}    = '';
+         $hsyms{$a}{'file'}   = '';
+         $hsyms{$a}{'line'}   = '';
+         $hsyms{$a}{'method'} = '';
          debug "$a => $loc ($obj not found)"
       }
    }
@@ -672,6 +742,10 @@ printf ("%-40s %24u (100%%)\n", "TOTAL", $total);
 
 if ($show_grouped) {
 
+    if ($live_report ne '') {
+       open (REPORT, '>', $live_report);
+    }
+
     print "\n";
     print "Allocated blocks grouped by callstacks:\n";
     print "---------------------------------------\n";
@@ -680,16 +754,29 @@ if ($show_grouped) {
         next if ($hotspots{$btstr}{'size'} == 0);
         my $allocs = $hotspots{$btstr}{'allocs'};
         my $frees  = $hotspots{$btstr}{'frees'};
+        my $size   = $hotspots{$btstr}{'size'};
         my $total  = $allocs + $frees;
         my $ratio  = floor ($allocs * 100 / $total);
         print "\n";
         print $allocs . " allocation(s) ($ratio% alive) for a total of " . 
-            $hotspots{$btstr}{'size'} . " bytes from:\n";
+            $size . " bytes from:\n";
         my @bt = split (/\;/, $btstr);
         foreach my $a (@bt) {
             my %result = decode ($a);
             print "\t\t" . $result{'loc'} . "\n";
         }
+        if (($live_report ne '') && (defined $bt[1])) {
+           my %result = decode ($bt[1]);
+           my $loc    = $result{'loc'};
+           my $dir    = $result{'dir'};
+           my $file   = $result{'file'};
+           my $line   = $result{'line'};
+           my $method = $result{'method'};
+           print REPORT "$dir;$file;$line;$method;$allocs;$frees;$size\n";
+        }
+    }
+    if ($live_report ne '') {
+       close (REPORT);
     }
 }
 

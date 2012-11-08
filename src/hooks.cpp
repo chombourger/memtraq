@@ -25,6 +25,10 @@
 #include <new>
 #include <string.h>
 
+#ifdef malloc
+#undef malloc
+#endif
+
 void *
 malloc (size_t s) {
    void *result;
@@ -36,6 +40,10 @@ malloc (size_t s) {
    TRACE3 (("exiting with result=%p", result));
    return result;
 }
+
+#ifdef calloc
+#undef calloc
+#endif
 
 void *
 calloc (size_t n, size_t size) {
@@ -52,6 +60,10 @@ calloc (size_t n, size_t size) {
    TRACE3 (("exiting with result=%p", result));
    return result;
 }
+
+#ifdef realloc
+#undef realloc
+#endif
 
 void *
 realloc (void* p, size_t s) {
@@ -73,6 +85,10 @@ realloc (void* p, size_t s) {
    TRACE3 (("exiting with result=%p", result));
    return result;
 }
+
+#ifdef free
+#undef free
+#endif
 
 void
 free (void* p) {

@@ -27,6 +27,7 @@
 #define TRACE_CLASS_DEFAULT LMM
 #include "internal.h"
 #include <stdio.h>
+#include <string.h>
 
 /** Lock for serializing memory requests. */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -142,6 +143,7 @@ lmm_alloc (size_t s) {
             TRACE4 (("keeping size of block %p to %u since only %u left", it, chunk, left));
          }
 
+         pthread_mutex_unlock (&lock);
          TRACE3 (("exiting with result=%p", result));
          return result;
       }
@@ -170,6 +172,42 @@ lmm_free (void *p) {
    pthread_mutex_unlock (&lock);
 
    TRACE3 (("exiting"));
+}
+
+#define min(a,b) ((a) < (b) ? (a) : (b))
+
+void *
+lmm_realloc (void *p, size_t s) {
+
+   clist_t *it;
+   void    *result;
+
+   TRACE3 (("called with p=%p, s=%u", p, s));
+
+   if (s == 0) {
+      lmm_free (p);
+      result = 0;
+   }
+   else {
+
+      result = lmm_alloc (s);
+      if ((result != 0) && (p != 0)) {
+
+         pthread_mutex_lock (&lock);
+
+         it = (clist_t*) p;
+         it --;
+
+         s = min (s, it->size);
+         memcpy (result, p, s);
+   
+         pthread_mutex_unlock (&lock);
+      }
+      lmm_free (p);
+   }
+
+   TRACE3 (("exiting with result=%p", result));
+   return result;
 }
 
 int

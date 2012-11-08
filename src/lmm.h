@@ -30,10 +30,13 @@ extern void*
 lmm_alloc (size_t s);
 
 extern void
-lmm_free (void* p);
+lmm_free (void *p);
+
+extern void *
+lmm_realloc (void *p, size_t s);
 
 extern int
-lmm_valid (void* p);
+lmm_valid (void *p);
 
 #ifdef __cplusplus
 }
