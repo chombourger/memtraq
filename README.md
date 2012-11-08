@@ -130,6 +130,7 @@ To decode the addresses offline we need:
 You can then run memtraq.pl again:
 
 ./memtraq.pl --paths /home/john/oe/tmp/staging/armv6-linux:/home/john/myapp \\
+   --gdb-tool=arm-unknown-linux-gnu-gdb \\
    --map myapp.maps myapp.log
 
 where:
