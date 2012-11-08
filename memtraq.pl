@@ -55,10 +55,11 @@ my $graph_cols = 80;
 my $graph_rows = 40;
 
 my $before = '';
-my $addr2line = 'addr2line';
 my $after = '';
+my $gdb = 'gdb';
 my $map = '';
 my $node_fraction = 0.20;
+my $objdump = 'objdump';
 my $paths = '';
 my $show_all = 0;
 my $show_grouped = 0;
@@ -68,13 +69,14 @@ my $live_report = '';
 
 GetOptions(\%opts,
    'before|b=s' => \$before,
-   'addr2line=s' => \$addr2line,
    'after|a=s' => \$after,
    'debug|d' => \$do_debug,
+   'gdb-tool=s' => \$gdb,
    'graph|g=s' => \$graph,
    'live-report=s' => \$live_report,
    'map|m=s' => \$map,
    'node-fraction|n=f' => \$node_fraction,
+   'objdump-tool=s' => \$objdump,
    'paths|p=s' => \$paths,
    'show-all|A' => \$show_all,
    'show-grouped|G' => \$show_grouped,
@@ -89,10 +91,12 @@ sub debug {
 }
 
 my $file=$ARGV[0];
-open (DMALLOC, '<', $file) or die("Could not open " . $file . "!");
+open (LOG, '<', $file) or die("Could not open " . $file . "!");
 
 my %maps;
+my %objects;
 my %hsyms;
+my $exec = '';
 
 # Load provided map file into the 'maps' array
 if ($map ne '') {
@@ -117,9 +121,10 @@ if ($map ne '') {
          $line =~ s/[^\/]+//;
 
          if ($line) {
-            $maps{$start}{'file'}  = $line;
-            $maps{$start}{'start'} = hex ($start);
-            $maps{$start}{'end'}   = hex ($end);
+            $maps{$start}{'file'}    = $line;
+            $maps{$start}{'start'}   = hex ($start);
+            $maps{$start}{'end'}     = hex ($end);
+            $objects{$line}{'start'} = hex($start);
             debug "added map entry '$line' $start-$end";
          }
       }
@@ -139,23 +144,6 @@ sub object_from_addr {
          if (($start <= $a) && ($a <= $end)) {
             $result = $maps{$m}{'file'};
             return $result;
-         }
-      }
-   }
-   return $result;
-}
-
-sub offset_from_addr {
-   my $a = $_[0];
-   my $result = 0;
-
-   if ($a =~ /^[0-9a-f]+$/) {
-      $a = hex ($a);
-      foreach my $m (keys %maps) {
-         my $start = $maps{$m}{'start'};
-         my $end   = $maps{$m}{'end'};
-         if (($start <= $a) && ($a <= $end)) {
-            return $a - $start;
          }
       }
    }
@@ -249,6 +237,37 @@ sub t_max_label($)
     return (max_label_2($szB, $szB_scaled), $unit);
 }
 
+sub is_alloc_wrapper {
+
+   my $name = $_[0];
+
+   return (($name eq 'WTF::fastMalloc(size_t)')
+        || ($name eq 'WTF::fastZeroedMalloc(size_t)')
+        || ($name eq 'WTF::tryFastMalloc(size_t)')
+        || ($name eq 'WTF::tryFastRealloc(void*, size_t)'));
+}
+
+# provide call info on who called malloc (or alike)
+sub get_caller_info {
+
+   my $btstr = $_[0];
+
+   my @bt = split (/\;/, $btstr);
+   my $i  = 0;
+
+   foreach my $a (@bt) {
+      if ($i > 0) {
+         my %result = decode ($a);
+         if (defined $bt[$i]) {
+            if ((!is_alloc_wrapper ($result{'method'})) || (!defined ($bt[$i+1]))) {
+               return %result;
+            }
+         }
+      }
+      $i = $i + 1;
+   }
+   return undef;
+}
 
 my %chunks;
 my $total = 0;
@@ -269,8 +288,8 @@ if ($after ne '') {
    $log = 0;
 }
 
-binmode (DMALLOC);
-while (read (DMALLOC, my $data, 28)) {
+binmode (LOG);
+while (read (LOG, my $data, 28)) {
 
    my ($sz, $serial, $ev, $ts, $thread_id) = unpack 'IQIQI', $data;
    $sz = $sz - 4 - 8 - 4 - 8 - 4;
@@ -299,14 +318,14 @@ while (read (DMALLOC, my $data, 28)) {
 
    # START event
    if ($ev == $EV_START) {
-      read (DMALLOC, $data, 4);
+      read (LOG, $data, 4);
    }
 
    # TAG event
    if ($ev == $EV_TAG) {
 
       # Extract tag name
-      read (DMALLOC, $data, $sz);
+      read (LOG, $data, $sz);
       my ($name, $serial) = unpack 'ZI', $sz;
 
       debug "LOG TAG name=$name, serial=$serial";
@@ -352,7 +371,7 @@ while (read (DMALLOC, my $data, 28)) {
    # MALLOC event
    if ($ev == $EV_MALLOC) {
 
-      read (DMALLOC, $data, 8);
+      read (LOG, $data, 8);
       my ($size, $ptr) = unpack 'II', $data;
       $sz = $sz - 4 - 4;
 
@@ -360,7 +379,7 @@ while (read (DMALLOC, my $data, 28)) {
 
       my $bt = "";
       while ($sz > 0) {
-         read (DMALLOC, $data, 4);
+         read (LOG, $data, 4);
          my ($ra) = unpack 'I', $data;
          $sz = $sz - 4;
          $bt = $bt . sprintf ("%x;", $ra);
@@ -389,7 +408,7 @@ while (read (DMALLOC, my $data, 28)) {
    # FREE event
    if ($ev == $EV_FREE) {
 
-      read (DMALLOC, $data, 4);
+      read (LOG, $data, 4);
       my ($ptr) = unpack 'I', $data;
       $sz = $sz - 4;
 
@@ -397,7 +416,7 @@ while (read (DMALLOC, my $data, 28)) {
 
       my $bt = "";
       while ($sz > 0) {
-         read (DMALLOC, $data, 4);
+         read (LOG, $data, 4);
          my ($ra) = unpack 'I', $data;
          $sz = $sz - 4;
          $bt = $bt . sprintf ("%x;", $ra);
@@ -429,7 +448,7 @@ while (read (DMALLOC, my $data, 28)) {
    # REALLOC event
    if ($ev == $EV_REALLOC) {
 
-      read (DMALLOC, $data, 12);
+      read (LOG, $data, 12);
       my ($oldptr, $size, $newptr) = unpack 'III', $data;
       $sz = $sz - 4 - 4 - 4;
 
@@ -437,7 +456,7 @@ while (read (DMALLOC, my $data, 28)) {
 
       my $bt = "";
       while ($sz > 0) {
-         read (DMALLOC, $data, 4);
+         read (LOG, $data, 4);
          my ($ra) = unpack 'I', $data;
          $sz = $sz - 4;
          $bt = $bt . sprintf ("%x;", $ra);
@@ -478,7 +497,7 @@ while (read (DMALLOC, my $data, 28)) {
    $heap_history[$lines]{'timestamp'} = $ts;
    $heap_history[$lines]{'heap'} = $total;
 }
-close(DMALLOC);
+close(LOG);
 
 print "\n";
 print "Summary:\n";
@@ -559,8 +578,6 @@ undef @graph;
 # Decode all addresses
 #----------------------------------------------------------------------------
 
-my %objects;
-
 print "\n";
 
 # First pass, get all the addresses we need to decode per object
@@ -608,10 +625,11 @@ foreach my $btstr (keys %unknown_frees) {
    }
 }
 
-# Second pass
+# Find files and their load offsets
 foreach my $obj (keys %objects) {
    my $file = $obj;
    my @paths_array = split (/:/, $paths);
+   $objects{$obj}{'file'} = '';
    foreach my $p (@paths_array) {
       if (-e $p . $obj) {
          $file = $p . $obj;
@@ -622,63 +640,134 @@ foreach my $obj (keys %objects) {
    }
    debug "Checking for $file...";
    if (-e $file) {
+      $objects{$obj}{'file'} = $file;
       my $type = `file -L -b $file`;
-      my $cmd = sprintf ($addr2line . " -C -f -p -e %s", $file);
-      print "Reading symbols from " . $file . "\n";
-      debug $cmd;
-      my $pid = open2 (*RP, *WP, $cmd);
-      for my $a ( keys %{ $objects{$obj} } ) {
-         my $offset = offset_from_addr ($a);
-         if ($type =~ / executable,/) {
-            $offset = hex($a);
-         }
-         my $in = sprintf ("%x", $offset);
-         debug "writing $in to pipe ($a)";
-         print WP $in . "\n";
-         my $loc = <RP>;
-         $loc =~ s/\n//;
-
-         my $dir  = '';
-         my $file = '';
-         my $line = '';
-         my $method = '';
-
-         if ($loc =~ /^([A-Za-z0-9_:, ()<>&*]+) at (\/[\/A-Za-z0-9_.-]+):(\d+)/) {
-            $method = $1;
-            $file   = $2;
-            $line   = $3;
-            $dir    = dirname ($file);
-            $dir    = abs_path ($dir) if (defined abs_path ($dir));
-            $file   = basename ($file);
-         }
-
-         $loc = sprintf ("%s: %s [%s %x]", $a, $loc, basename ($obj), $offset);
-
-         $hsyms{$a}{'object'} = $obj;
-         $hsyms{$a}{'loc'}    = $loc;
-         $hsyms{$a}{'dir'}    = $dir;
-         $hsyms{$a}{'file'}   = $file;
-         $hsyms{$a}{'line'}   = $line;
-         $hsyms{$a}{'method'} = $method;
-
-         debug ("resolved $a to $loc ('$obj')");
+      if ($type =~ / executable,/) {
+         $exec = $file;
+         $objects{$obj}{'offset'} = 0;
       }
-      close (RP);
-      close (WP);
-   }
-   else {
-      print "$file: file not found!\n";
-      for my $a ( keys %{ $objects{$obj} } ) {
-         my $loc = sprintf ("%s: ??? [%s]", $a, basename ($obj));
-         $hsyms{$a}{'object'} = $obj;
-         $hsyms{$a}{'loc'}    = $loc;
-         $hsyms{$a}{'dir'}    = '';
-         $hsyms{$a}{'file'}   = '';
-         $hsyms{$a}{'line'}   = '';
-         $hsyms{$a}{'method'} = '';
-         debug "$a => $loc ($obj not found)"
+      else {
+         my $offset = `$objdump -h $file |grep ' .text '|awk '{ print \$4; }'`;
+         $offset =~ s/\n//g;
+         $objects{$obj}{'offset'} = hex ($offset);
       }
    }
+}
+
+if (-e $exec) {
+   my $cmd = "$gdb --quiet";
+   debug "gdb command = $cmd";
+   my $pid = open2 (*RP, *WP, $cmd);
+   my $line;
+   foreach my $obj (keys %objects) {
+      my $file   = $objects{$obj}{'file'};
+      my $start  = $objects{$obj}{'start'};
+      my $offset = $objects{$obj}{'offset'};
+      if ((defined ($start)) && (defined ($offset))) {
+         # the parent process has an offset of zero
+         if ($offset > 0) {
+            my $a = $start + $offset;
+            debug ">gdb: " . sprintf ("add-symbol-file $file 0x%x", $a);
+            print WP sprintf ("add-symbol-file $file 0x%x\n", $a);
+            #$line = <RP>; # skip "add symbol table from file..."
+            #$line = <RP>; # skip ".text_addr = ..."
+            #$line = <RP>; # skip "(y or n)..."
+            #$line = <RP>; # skip "Reading symbols from..."
+         }
+         else {
+            debug ">gdb: symbol-file $file";
+            print WP "symbol-file $file\n";
+         }
+
+         # Skip all messages printed by gdb until "Reading symbols from"
+         do {
+            $line = <RP>;
+            $line =~ s/\n//;
+            debug ">gdb: $line";
+         } while ($line !~ /Reading symbols from/);
+
+         # Loop for decoding all addresses we need from that object
+         for my $a ( keys %{ $objects{$obj} } ) {
+
+            # Skip special entries from the objects hash
+            next if ($a eq "file");
+            next if ($a eq "start");
+            next if ($a eq "offset");
+
+            # Get gdb to resolve this address
+            debug ">gdb: info line *0x$a";
+            print WP "info line *0x$a\n";
+            $line = <RP>;
+            $line =~ s/\n//g;
+            debug "<gdb: '$line'";
+
+            my $method = '';
+            my $file   = '';
+            my $dir    = '';
+            my $num    = '';
+            my $loc    = sprintf ("%s: ??? [%s]", $a, basename ($obj));
+
+            # No debugging information but the symbol could be resolved
+            if ($line =~ /No line number information available for address 0x[0-9a-f]+ <([A-Za-z0-9_:, ()<>&*]+)\+\d+>/) {
+               $method = $1;
+               $loc    = $method;
+               $loc    = sprintf ("%s: %s [%s]", $a, $method, basename ($obj));
+               debug "matched to symbol $method";
+            }
+            # File & line information found
+            elsif ($line =~ /Line (\d+) of "([^"]+)" starts at address 0x[0-9a-f]+ <([A-Za-z0-9_:, ()<>&*]+)\+\d+>/) {
+               $num    = $1;
+               $file   = $2;
+               $method = $3;
+               $loc    = sprintf ("%s: %s <%s:%u> [%s]", $a, $method, $file, $num, basename ($obj));
+               debug "matched to $file:$line ($method)";
+            }
+            elsif ($line =~ /A problem internal to GDB has been detected,/) {
+               $line = <RP>; # skip "further debugging may prove unreliable."
+               $line = <RP>; # skip "Quit this debugging session? (y or n)..."
+               $line = <RP>;
+               $line =~ s/\n//g;
+            }
+ 
+            if ($file ne '') {
+               $dir  = dirname ($file);
+               $file = basename ($file);
+            }
+ 
+            $hsyms{$a}{'object'} = $obj;
+            $hsyms{$a}{'loc'}    = $loc;
+            $hsyms{$a}{'dir'}    = $dir;
+            $hsyms{$a}{'file'}   = $file;
+            $hsyms{$a}{'line'}   = $num;
+            $hsyms{$a}{'method'} = $method;
+         }
+
+         # unload symbol file(s)
+         print WP "symbol-file\n";
+      }
+      # File could not be loaded
+      else {
+         for my $a ( keys %{ $objects{$obj} } ) {
+
+            # Skip special entries from the objects hash
+            next if ($a eq "file");
+            next if ($a eq "start");
+            next if ($a eq "offset");
+
+            my $loc = sprintf ("%s: ??? [%s]", $a, basename ($obj));
+
+            $hsyms{$a}{'object'} = $obj;
+            $hsyms{$a}{'loc'}    = $loc;
+            $hsyms{$a}{'dir'}    = '';
+            $hsyms{$a}{'file'}   = '';
+            $hsyms{$a}{'line'}   = '';
+            $hsyms{$a}{'method'} = '';
+         }
+      }
+   }
+   print WP "quit\n";
+   close (RP);
+   close (WP);
 }
 
 #----------------------------------------------------------------------------
@@ -765,14 +854,17 @@ if ($show_grouped) {
             my %result = decode ($a);
             print "\t\t" . $result{'loc'} . "\n";
         }
-        if (($live_report ne '') && (defined $bt[1])) {
-           my %result = decode ($bt[1]);
-           my $loc    = $result{'loc'};
-           my $dir    = $result{'dir'};
-           my $file   = $result{'file'};
-           my $line   = $result{'line'};
-           my $method = $result{'method'};
-           print REPORT "$dir;$file;$line;$method;$allocs;$frees;$size\n";
+        if ($live_report ne '') {
+           my %result = get_caller_info ($btstr);
+	   if (%result) {
+              my $obj    = $result{'object'};
+              my $loc    = $result{'loc'};
+              my $dir    = $result{'dir'};
+              my $file   = $result{'file'};
+              my $line   = $result{'line'};
+              my $method = $result{'method'};
+              print REPORT "$obj;$dir;$file;$line;$method;$allocs;$frees;$size\n";
+           }
         }
     }
     if ($live_report ne '') {
